@@ -1,0 +1,91 @@
+[
+  {
+    "fok": "Natural Sciences",
+    "sfok": [
+      "Mathematics",
+      "Computer and Information Sciences",
+      "Physical Sciences",
+      "Chemical Sciences",
+      "Earth and Related Environmental Sciences",
+      "Biological Sciences",
+      "Other Natural Sciences"
+    ]
+  },
+  {
+    "fok": "Engineering and Technology",
+    "sfok": [
+      "Civil Engineering",
+      "Electrical, Electronic and Information Engineering",
+      "Mechanical Engineering",
+      "Chemical Engineering",
+      "Materials Engineering",
+      "Medical Engineering",
+      "Environmental Engineering",
+      "Environmental Biotechnology",
+      "Industrial Biotechnology",
+      "Nanotechnology",
+      "Other Engineering and Technologies"
+    ]
+  },
+  {
+    "fok": "Medical and Health Sciences",
+    "sfok": [
+      "Basic Medicine",
+      "Clinical Medicine",
+      "Health Sciences",
+      "Medical Biotechnology",
+      "Other Medical Sciences"
+    ]
+  },
+  {
+    "fok": "Agricultural Sciences",
+    "sfok": [
+      "Agriculture, Forestry, and Fisheries",
+      "Animal and Dairy Science",
+      "Veterinary Science",
+      "Agricultural Biotechnology",
+      "Other Agricultural Sciences"
+    ]
+  },
+  {
+    "fok": "Social Sciences",
+    "sfok": [
+      "Psychology",
+      "Economics",
+      "Business and Management",
+      "Education",
+      "Sociology",
+      "Law",
+      "Political Science",
+      "Social and Economic Geography",
+      "Media and Communications",
+      "Other Social Sciences"
+    ]
+  },
+  {
+    "fok": "Humanities",
+    "sfok": [
+      "History and Archaeology",
+      "Languages and Literature",
+      "Philosophy, Ethics, and Religion",
+      "Art (Theory and History)",
+      "Other Humanities"
+    ]
+  },
+  {
+    "fok": "Extended Fields for LLM",
+    "sfok": [
+      "Artificial Intelligence and Machine Learning",
+      "Digital Humanities",
+      "Ethics in AI",
+      "Environmental Informatics",
+      "Cognitive Science",
+      "Linguistics",
+      "Cultural Studies",
+      "History",
+      "Literature",
+      "Philosophy",
+      "Anthropology"
+    ]
+  }
+]

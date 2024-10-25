@@ -1,0 +1,18 @@
+[
+  {
+    "field_of_knowledge": "Mathematics",
+    "subfields": ["number systems"]
+  },
+  {
+    "field_of_knowledge": "Physics",
+    "subfields": ["thermodynamics"]
+  },
+  {
+    "field_of_knowledge": "Chemistry",
+    "subfields": ["organic chemistry"]
+  },
+  {
+    "field_of_knowledge": "Biology",
+    "subfields": ["cell biology"]
+  }
+]
