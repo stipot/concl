@@ -4,3 +4,6 @@ transformers
 datasets
 ipywidgets>=7.0.0
 nbformat>=4.2.0
+openai
+toml
+
