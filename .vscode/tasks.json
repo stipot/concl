@@ -1,0 +1,34 @@
+{
+  // See https://go.microsoft.com/fwlink/?LinkId=733558
+  // for the documentation about the tasks.json format
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Этап 1.3. Тестирование модели.",
+      "type": "shell",
+      "command": "python ./step01/tester.py --session_id=${input:testName} --model=${input:model}",
+      "args": [
+        {
+          "session_id": "${input:model}",
+          "model": "${input:model}"
+        }
+      ],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "testName",
+      "description": "Ярлык для теста",
+      "default": "0.1"
+    },
+    {
+      "type": "pickString",
+      "id": "model",
+      "description": "Какая ревизия данных?",
+      "options": ["gpt-4o", "gpt-4o-2024-05-13", "gpt-3.5-turbo", "gpt-4"],
+      "default": "gpt-3.5-turbo"
+    }
+  ]
+}
