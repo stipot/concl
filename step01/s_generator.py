@@ -56,13 +56,47 @@ Instructions:
         assistant_reply = assistant_reply[7:].strip()
         if assistant_reply.endswith("```"):
             assistant_reply = assistant_reply[:-3].strip()
+    elif assistant_reply.startswith("```"):
+        assistant_reply = assistant_reply[3:].strip()
+        if assistant_reply.endswith("```"):
+            assistant_reply = assistant_reply[:-3].strip()
 
     print("Response:\n", assistant_reply)
 
+    import json
+
+    # Попытка разобрать весь ответ как JSON
     try:
         generated_items = json.loads(assistant_reply)
     except json.JSONDecodeError as e:
         print("Error parsing JSON:", e)
+        print("Attempting to parse individual JSON objects...")
+
+        # Удаляем начальные и конечные квадратные скобки, если они есть
+        assistant_reply = assistant_reply.strip()
+        if assistant_reply.startswith("["):
+            assistant_reply = assistant_reply[1:]
+        if assistant_reply.endswith("]"):
+            assistant_reply = assistant_reply[:-1]
+
+        # Разбиваем строку на отдельные объекты
+        import re
+
+        items = re.findall(r"\{.*?\}(?=,\s*\{|\s*$)", assistant_reply, re.DOTALL)
+
+        generated_items = []
+        for i, item in enumerate(items):
+            try:
+                obj = json.loads(item)
+                generated_items.append(obj)
+            except json.JSONDecodeError as e:
+                print(f"Skipping incomplete item {i}: {e}")
+                # Продолжаем, пропуская неполный объект
+                continue
+
+    # Проверяем, есть ли успешно разобранные объекты
+    if not generated_items:
+        print("No valid JSON objects were parsed.")
         return []
 
     timestamp = datetime.datetime.now().isoformat()
