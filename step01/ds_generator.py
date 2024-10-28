@@ -105,7 +105,7 @@ def main():
         return
 
     client = openai.OpenAI(api_key=api_key)
-    supported_models = ["gpt-3.5-turbo", "gpt-4"]
+    supported_models = ["gpt-4o", "gpt-3.5-turbo", "gpt-4"]
     model = supported_models[args.model_number]
 
     field_data_list = load_field_data(os.path.join(data_folder, args.field_data_file))
