@@ -22,6 +22,22 @@ def load_generated_questions(filepath):
         return [json.loads(line) for line in file]
 
 
+# Function to read output_file and collect processed questions
+def load_processed_questions(output_filepath):
+    processed_questions = set()
+    if os.path.exists(output_filepath):
+        with open(output_filepath, "r", encoding="utf-8") as outfile:
+            for line in outfile:
+                try:
+                    result = json.loads(line)
+                    question_text = result.get("q", "").strip()
+                    if question_text:
+                        processed_questions.add(question_text)
+                except json.JSONDecodeError:
+                    continue
+    return processed_questions
+
+
 # Function to test the model
 def test_model(client, questions_data, model_name, temperature, session_id, batch_size, output_filepath):
     num_questions = len(questions_data)  # TODO Ограничить выборку
@@ -60,7 +76,7 @@ def test_model(client, questions_data, model_name, temperature, session_id, batc
                 context_counter += 1
 
         # Test questions with contexts
-        answers_with_context, _ = get_model_answers(prompts_with_context, model_name, temperature)
+        answers_with_context, _ = get_model_answers(client, prompts_with_context, model_name, temperature)
 
         # Process and record results
         timestamp = datetime.datetime.now().isoformat()
@@ -100,7 +116,7 @@ def test_model(client, questions_data, model_name, temperature, session_id, batc
 
             results.append(result_item)
 
-        # Append results to the log file after processing the batch
+        # Write results to file after processing the batch
         with open(output_filepath, "a", encoding="utf-8") as outfile:
             for result in results:
                 json_line = json.dumps(result, ensure_ascii=False)
@@ -132,10 +148,10 @@ def get_model_answers(client, prompts, model_name, temperature):
     )
 
     # Get the model name from the response
-    model_used = response["model"]
+    model_used = response.model
 
     # Extract the assistant's reply
-    assistant_reply = response.to_dict()["choices"][0]["message"]["content"].strip()
+    assistant_reply = response.choices[0].message.content.strip()
 
     # Parse the numbered answers
     answers = parse_numbered_answers(assistant_reply, len(prompts))
@@ -149,7 +165,7 @@ def parse_numbered_answers(assistant_reply, num_prompts):
     # Split the reply into lines
     lines = assistant_reply.strip().split("\n")
     for line in lines:
-        # Match lines that start with a number followed by a dot and space
+        # Match lines that start with a number, dot, and space
         match = re.match(r"^(\d+)\.\s*(.*)", line)
         if match:
             idx = int(match.group(1)) - 1  # Zero-based index
@@ -163,6 +179,7 @@ def parse_numbered_answers(assistant_reply, num_prompts):
 def main():
     parser = argparse.ArgumentParser(description="Test model on generated questions.")
     parser.add_argument("--language", type=str, default="en", help="Language code (e.g., en, ru).")
+    parser.add_argument("--questions_file", type=str, default="questions_data_en.jsonl", help="Path to the generated questions JSONL file.")
     parser.add_argument("--model", type=str, default="gpt-3.5-turbo", help='Model name: "gpt-4o", "gpt-4o-2024-05-13", "gpt-3.5-turbo", "gpt-4"')
     parser.add_argument("--output_file", type=str, default="test_results.jsonl", help="Output file for test results.")
     parser.add_argument("--temperature", type=float, default=0.5, help="Inference temperature.")
@@ -176,13 +193,27 @@ def main():
         return
 
     client = openai.OpenAI(api_key=api_key)
-    questions_data = load_generated_questions(f"{data_folder}questions_data_{args.language}.jsonl")
 
-    # Remove output file if it exists to prevent appending to old data
+    # Path to the output file
     output_filepath = os.path.join(data_folder, args.output_file)
-    if os.path.exists(output_filepath):
-        os.remove(output_filepath)
 
+    # Load processed questions
+    processed_questions = load_processed_questions(output_filepath)
+
+    # Path to the questions_file
+    input_filepath = os.path.join(data_folder, args.questions_file)
+
+    # Load questions data
+    questions_data = load_generated_questions(input_filepath)
+
+    # Filter out already processed questions
+    questions_data = [q for q in questions_data if q.get("q", "").strip() not in processed_questions]
+
+    if not questions_data:
+        print("All questions have been processed.")
+        return
+
+    # Run the model testing
     test_model(client, questions_data, args.model, args.temperature, args.session_id, args.batch_size, output_filepath)
 
 
