@@ -52,7 +52,7 @@ def test_model(client, questions_data, model_name, temperature, session_id, batc
         prompts_no_context = []
         for idx, item in enumerate(batch_items):
             question = item.get("q", "")
-            prompts_no_context.append(f"{idx+1}. {question}")
+            prompts_no_context.append({"q": idx + 1, "question": question})
 
         # Test questions without context
         answers_no_context, model_used = get_model_answers(client, prompts_no_context, model_name, temperature)
@@ -68,7 +68,7 @@ def test_model(client, questions_data, model_name, temperature, session_id, batc
                 context = variation.get("c", "").strip()
                 if not context.endswith("."):
                     context += "."
-                prompt = f"{context_counter}. {context} {question}"
+                prompt = f'{{"q": {context_counter}, "question": "{context} {question}"}}'
                 prompts_with_context.append(prompt)
                 contexts_list.append(
                     {"batch_index": idx, "context_index": context_counter - 1, "expected_answer": variation.get("a", ""), "context": variation.get("c", "")}  # Zero-based index
@@ -135,9 +135,16 @@ def get_model_answers(client, prompts, model_name, temperature):
 
     # Instruction before the questions
     instruction = "This is a test. Please answer each question concisely, in no more than two words."
+    # Prepare the JSON template for the model's response
+    prompt_json = json.dumps(prompts, ensure_ascii=False)
 
     # Combine prompts into a single message
-    combined_prompt = instruction + "\n\n" + "\n".join(prompts)
+    combined_prompt = f"""{instruction}
+Answer the following questions and provide the answers in JSON format with the structure:
+[{{"q": question number, "a": "your answer"}}]
+Questions:
+{prompt_json}
+"""
 
     # Send the batch request
     response = client.chat.completions.create(
@@ -162,16 +169,27 @@ def get_model_answers(client, prompts, model_name, temperature):
 # Function to parse numbered answers from the assistant's reply
 def parse_numbered_answers(assistant_reply, num_prompts):
     answers = [""] * num_prompts  # Initialize with empty strings
-    # Split the reply into lines
-    lines = assistant_reply.strip().split("\n")
-    for line in lines:
-        # Match lines that start with a number, dot, and space
-        match = re.match(r"^(\d+)\.\s*(.*)", line)
-        if match:
-            idx = int(match.group(1)) - 1  # Zero-based index
+    # Remove code block markers if present
+    assistant_reply = assistant_reply.strip()
+    if assistant_reply.startswith("```json"):
+        assistant_reply = assistant_reply[7:]
+        if assistant_reply.endswith("```"):
+            assistant_reply = assistant_reply[:-3]
+    elif assistant_reply.startswith("```"):
+        assistant_reply = assistant_reply[3:]
+        if assistant_reply.endswith("```"):
+            assistant_reply = assistant_reply[:-3]
+    # Try to parse the reply as JSON
+    try:
+        reply_data = json.loads(assistant_reply)
+        for item in reply_data:
+            idx = int(item.get("q", 0)) - 1  # Zero-based index
             if 0 <= idx < num_prompts:
-                answer = match.group(2).strip()
+                answer = item.get("a", "").strip()
                 answers[idx] = answer
+    except json.JSONDecodeError:
+        print("Error parsing JSON from assistant's reply.")
+        # If parsing fails, leave answers as empty strings
     return answers
 
 
