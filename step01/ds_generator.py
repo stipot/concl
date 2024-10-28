@@ -22,6 +22,24 @@ def load_field_data(filepath):
         return json.load(file)
 
 
+# Load processed subjects from the output file
+def load_processed_subjects(output_filename):
+    processed_subjects = set()
+    if os.path.exists(output_filename):
+        with open(output_filename, "r", encoding="utf-8") as infile:
+            for line in infile:
+                try:
+                    item = json.loads(line)
+                    field = item.get("f", "").strip()
+                    subfield = item.get("s", "").strip()
+                    subject = item.get("j", "").strip()
+                    key = (field, subfield, subject)
+                    processed_subjects.add(key)
+                except json.JSONDecodeError:
+                    continue
+    return processed_subjects
+
+
 # Generate questions for a given subject
 def generate_questions(client, language, num_questions, field_of_knowledge, subfield, subject_data, model):
     subject = subject_data.get("subject", "")
@@ -37,7 +55,7 @@ Objective: In the subject "{subject}" of the subfield "{subfield}" in "{field_of
 
 Instructions:
 - Create questions that can have different answers based on different contexts or perspectives. The questions must allow a finite number of possible answers.
-- For each question, provide at least two contexts, that lead to different answers.
+- For each question, provide at least two contexts that lead to different answers.
 - Question without context should also have (obvious or default) answer (don't require information from the contexts).
 - Provide the answer for each context.
 - Ensure all answers are correct.
@@ -160,6 +178,11 @@ def main():
     supported_models = ["gpt-4o", "gpt-4", "gpt-3.5-turbo"]
     model = supported_models[args.model_number]
 
+    output_filename = f"{data_folder}{model}_generated_questions_{args.language}.jsonl"
+
+    # Load processed subjects
+    processed_subjects = load_processed_subjects(output_filename)
+
     field_data_list = load_field_data(os.path.join(data_folder, args.field_data_file))
 
     # Iterate over each field of knowledge (fok)
@@ -172,13 +195,22 @@ def main():
             subfield = sfok_data.get("name", "Unknown Subfield")
             subjects = sfok_data.get("subjects", [])
 
-            # Iterate over each subject
+            # Filter out subjects that have been processed
+            subjects_to_process = []
             for subject_data in subjects:
+                subject_name = subject_data.get("subject", "")
+                key = (field_of_knowledge.strip(), subfield.strip(), subject_name.strip())
+                if key not in processed_subjects:
+                    subjects_to_process.append(subject_data)
+                else:
+                    print(f"Skipping already processed subject: {subject_name}")
+
+            # Iterate over each subject to process
+            for subject_data in subjects_to_process:
                 # Generate questions for the current subject
                 generated_questions = generate_questions(client, args.language, args.num_questions, field_of_knowledge, subfield, subject_data, model)
 
                 # Save the generated questions to a file
-                output_filename = f"{data_folder}{model}_generated_questions_{args.language}.jsonl"
                 with open(output_filename, "a", encoding="utf-8") as outfile:
                     for item in generated_questions:
                         json_line = json.dumps(item, ensure_ascii=False)
