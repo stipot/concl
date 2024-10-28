@@ -49,6 +49,7 @@ Instructions:
 
     # Извлечение ответа от модели
     assistant_reply = response.to_dict()["choices"][0]["message"]["content"].strip()
+    # TODO Get exact response.to_dict()["model"]
 
     # Удаление возможных маркеров кода
     if assistant_reply.startswith("```json"):
@@ -85,7 +86,7 @@ def main():
         return
 
     openai.api_key = api_key
-    supported_models = ["gpt-3.5-turbo", "gpt-4"]
+    supported_models = ["gpt-4o", "gpt-3.5-turbo", "gpt-4"]
     model = supported_models[args.model_number]
 
     sfoks_data = load_sfoks(data_folder + args.sfoks_file)
@@ -93,7 +94,7 @@ def main():
     all_generated_data = []
 
     # Проходим по каждой комбинации fok и sfok для генерации subjects
-    for entry in sfoks_data[:5]:
+    for entry in sfoks_data[:2]:
         field_of_knowledge = entry["fok"]
         sfok_list = entry["sfok"]
         sfoks = []
