@@ -1,3 +1,4 @@
+# Subjects generation
 import openai
 import json
 import argparse
