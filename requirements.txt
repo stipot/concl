@@ -8,4 +8,8 @@ ipywidgets>=7.0.0
 nbformat>=4.2.0
 openai
 toml
+openpyxl
 
+scipy
+scikit-learn
+seaborn
