@@ -164,3 +164,148 @@
 - **Улучшение сжатия:** Модель будет способна эффективно уменьшать объем контекста, сохраняя все ассоциации и связи, которые могут быть важны для понимания последующих утверждений.
 - **Гибкость:** Благодаря использованию латентного пространства, архитектура сможет адаптироваться к различным видам текстов и задач, что делает её универсальной для различных приложений.
 - **Улучшение точности предсказаний:** Сохранение ассоциативных связей ближайших порядков может помочь в более глубоком понимании текста и улучшении результатов предсказания.
+
+
+Ниже приведены **только изменения**, которые необходимо внести в ваш код. Пояснения даны в комментариях к изменениям. Не переписывайте весь код, а только внесите указанные изменения.
+
+### Изменения
+
+1. **Добавить вывод графиков потерь автокодировщика, совмещённых потерь и точности бинарных классификаторов, итоговых confusion matrix, потерь и точности дообучения энкодера, оценку confusion matrix по всем классам в одном месте:**
+
+   В классе `Trainer`, вместо `plot_metrics` и `plot_confusion_matrix` в конце добавьте новый метод `plot_all_results`, который будет строить все необходимые графики. Для этого измените существующий `plot_metrics` и `plot_confusion_matrix` на один метод, например `plot_all_results`:
+
+   ```python
+   # В классе Trainer удалите или переименуйте plot_metrics и plot_confusion_matrix.
+   # Вместо этого добавьте новый метод plot_all_results.
+   
+   def plot_all_results(self):
+       # 1. Потери автокодировщика
+       # 2. Потери и точность всех бинарных классификаторов на одном графике (например, средние значения по всем классам)
+       # 3. Итоговые confusion matrix по каждому классу после обучения и дообучения
+       # 4. Потери и точность дообучения энкодера
+       # 5. Confusion matrix по всем классам после дообучения
+
+       # Пример: построим фигуру с несколькими subplot
+       fig = make_subplots(rows=3, cols=2, subplot_titles=(
+           "AE Loss", 
+           "Avg Binary Classifiers Loss & Acc",
+           "Fine-tune Loss & Acc",
+           "Confusion Matrix Before Fine-tuning (Class 0)",
+           "Confusion Matrix After Fine-tuning (Class 0)",
+           "Other Confusion Matrices..."
+       ))
+
+       # Пример: добавляем потери AE
+       fig.add_trace(go.Scatter(y=self.ae_loss_log, mode="lines+markers", name="AE Loss"), row=1, col=1)
+
+       # Пример: усреднённые потери и точность бинарных классификаторов
+       avg_loss = []
+       avg_acc = []
+       for cls in range(self.num_classes):
+           if self.classifier_loss_log[cls]:
+               avg_loss.append(self.classifier_loss_log[cls][-1])
+               avg_acc.append(self.classifier_acc_log[cls][-1])
+       if avg_loss and avg_acc:
+           fig.add_trace(go.Bar(y=avg_loss, x=list(range(self.num_classes)), name="Binary Avg Loss"), row=1, col=2)
+           fig.add_trace(go.Bar(y=avg_acc, x=list(range(self.num_classes)), name="Binary Avg Acc"), row=1, col=2)
+
+       # Пример: потери и точность дообучения энкодера
+       if self.fine_tune_loss_log and self.fine_tune_acc_log:
+           fig.add_trace(go.Scatter(y=self.fine_tune_loss_log, mode="lines+markers", name="Fine-tune Loss"), row=2, col=1)
+           fig.add_trace(go.Scatter(y=self.fine_tune_acc_log, mode="lines+markers", name="Fine-tune Acc"), row=2, col=1)
+
+       # Пример: Confusion matrix для класса 0 до финетюнинга
+       # Предполагается, что у вас сохранены pred_all_before/target_all_before 
+       # и pred_all_after/target_all_after для построения confusion matrix.
+       # Используйте confusion_matrix из sklearn.
+
+       if self.pred_all_before and self.target_all_before:
+           from sklearn.metrics import confusion_matrix
+           cm_before = confusion_matrix(self.target_all_before[0], self.pred_all_before[0], labels=[0,1])
+           fig.add_trace(go.Heatmap(z=cm_before, x=["Pred 0","Pred 1"], y=["True 0","True 1"], colorscale='Blues'), row=2, col=2)
+
+       # Аналогично для after_finetune
+       if self.pred_all_after and self.target_all_after:
+           cm_after = confusion_matrix(self.target_all_after[0], self.pred_all_after[0], labels=[0,1])
+           fig.add_trace(go.Heatmap(z=cm_after, x=["Pred 0","Pred 1"], y=["True 0","True 1"], colorscale='Blues'), row=3, col=1)
+
+       # Можно добавить остальные confusion matrix как дополнительный шаг или сменить разметку subplot.
+
+       fig.update_layout(height=1200, width=1000, title_text="Все результаты обучения")
+       fig.show()
+   ```
+
+   **Изменения**:  
+   - Удалите вызовы старых `plot_metrics()` и `plot_confusion_matrix()` и замените их одним вызовом `plot_all_results()` после всех этапов обучения.
+   - Метод `plot_all_results` берет данные из существующих логов и массивов, ничего нового не создавайте, просто используйте уже имеющуюся информацию.
+   
+2. **Отдельный блок, который после полного цикла обучения начинает сначала, но вместо обучения автокодировщика загружает улучшенный автокодировщик с прошлого этапа, и поставить этот процесс в цикл:**
+
+   В основном скрипте после полного цикла добавьте что-то вроде:
+   ```python
+   # После завершения одного цикла
+   # Выполним повторный цикл, где вместо обучения автокодировщика загрузим улучшенный автокодировщик
+   num_iterations = 3  # к примеру
+   for i in range(num_iterations):
+       # Загрузка улучшенного автокодировщика
+       trainer.load_autoencoder(suffix="after_finetune")
+
+       # Повторяем обучение бинарных классификаторов с загруженным автокодировщиком
+       trainer.train_binary_classifiers(epochs=epochs, lr=0.001)
+
+       # Оцениваем, дообучаем энкодер и снова сохраняем
+       trainer.evaluate_combined_model(trainer.test_loader)
+       trainer.fine_tune_encoder(fine_tune_loader, epochs=3, lr=0.0005)
+       trainer.save_autoencoder(suffix=f"iter_{i}_after_finetune")
+       # Можно также сохранить классификаторы
+       for cls in range(num_classes):
+           trainer.save_classifier(cls=cls, suffix=f"iter_{i}_after_finetune")
+   ```
+
+   **Изменения**:
+   - Добавьте этот цикл после основного процесса обучения и дообучения.
+   - Не переписывайте весь код, только вставьте этот блок после основной логики.
+   
+3. **Проверьте, что автокодировщик и бинарные классификаторы замораживаются на соответствующих этапах:**
+
+   В вашем коде `train_binary_classifier` уже добавлен код для заморозки автокодировщика:
+   ```python
+   self.autoencoder.eval()
+   for param in self.autoencoder.parameters():
+       param.requires_grad = False
+   ```
+   
+   Убедитесь, что при дообучении энкодера вы возвращаете `requires_grad = True`:
+   ```python
+   # После обучения бинарных классификаторов:
+   self.autoencoder.train()
+   for param in self.autoencoder.parameters():
+       param.requires_grad = True
+   ```
+   
+   **Изменения**:
+   - Добавьте после обучения каждого бинарного классификатора (или после цикла обучения всех классификаторов) возврат автокодировщика в train и восстановление `requires_grad`:
+     ```python
+     # После train_binary_classifiers(...)
+     self.autoencoder.train()
+     for param in self.autoencoder.parameters():
+         param.requires_grad = True
+     ```
+   
+   При дообучении энкодера (`fine_tune_encoder`) автокодировщик уже должен быть `train()` и `requires_grad=True`, убедитесь, что это так.
+
+---
+
+**Итого:**
+
+- **Изменение 1:**  
+  Заменить старые методы вывода графиков одним методом `plot_all_results()`, который отобразит все необходимые графики.  
+  Потом в основном коде вызвать `trainer.plot_all_results()` вместо отдельных `plot_metrics()` и `plot_confusion_matrix()`.
+
+- **Изменение 2:**  
+  После основного процесса обучения и дообучения добавить цикл, который будет загружать улучшенный автокодировщик и снова обучать бинарные классификаторы, затем дообучать энкодер и сохранять результаты.
+
+- **Изменение 3:**  
+  После обучения бинарных классификаторов убедиться в возврате автокодировщика в `train()` режим и `requires_grad=True` для всех параметров.
+
+Не переписывайте весь код, только внесите указанные изменения в существующие части.
