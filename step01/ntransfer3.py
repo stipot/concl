@@ -398,20 +398,29 @@ class Trainer:
     def plot_results(self):
         print("\nГрафическое отображение результатов...")
 
+        # Усреднение потерь и точности по всем бинарным классификаторам
+        mean_binary_loss_per_epoch = [sum(vals) / len(vals) for vals in zip(*self.binary_loss_logs.values())]
+        mean_binary_acc_per_epoch = [sum(vals) / len(vals) for vals in zip(*self.binary_acc_logs.values())]
+
         fig = make_subplots(
             rows=2,
             cols=2,
-            subplot_titles=("Потери Автокодировщика", "Точность Обучения Бинарных Классификаторов", "Потери и Точность Дообучения Энкодера", "Итоговая Точность Модели"),
+            subplot_titles=(
+                "Потери Автокодировщика",
+                "Потери и Точность Бинарных Классификаторов (среднее по всем классам)",
+                "Потери и Точность Дообучения Энкодера",
+                "Итоговая Точность Модели",
+            ),
         )
 
         # Потери Автокодировщика
-        fig.add_trace(go.Scatter(y=self.ae_loss_log, mode="lines+markers", name="Потери AE"), row=1, col=1)
+        fig.add_trace(go.Scatter(y=self.ae_loss_log, mode="lines+markers", name="AE Loss"), row=1, col=1)
 
-        # Точность Обучения Бинарных Классификаторов для всех классов
-        for cls in range(self.num_classes):
-            fig.add_trace(go.Scatter(y=self.binary_acc_logs[cls], mode="lines+markers", name=f"Class {cls} Train Acc"), row=1, col=2)
+        # Средние потери и точность бинарных классификаторов
+        fig.add_trace(go.Scatter(y=mean_binary_loss_per_epoch, mode="lines+markers", name="Binary Cls Mean Loss"), row=1, col=2)
+        fig.add_trace(go.Scatter(y=mean_binary_acc_per_epoch, mode="lines+markers", name="Binary Cls Mean Acc"), row=1, col=2)
 
-        # Потери и Точность Дообучения Энкодера
+        # Потери и точность Дообучения Энкодера
         fig.add_trace(go.Scatter(y=self.fine_tune_loss_log, mode="lines+markers", name="Fine-tune Loss"), row=2, col=1)
         fig.add_trace(go.Scatter(y=self.fine_tune_acc_log, mode="lines+markers", name="Fine-tune Accuracy"), row=2, col=1)
 
@@ -426,6 +435,18 @@ class Trainer:
 
         fig.update_layout(height=800, width=1200, title_text="Анализ Обучения", showlegend=True)
         fig.show()
+
+        # Отображение confusion matrix до финетюнинга
+        if hasattr(self, "cm_before"):
+            fig_cm_before = go.Figure(data=go.Heatmap(z=self.cm_before, x=list(range(self.num_classes)), y=list(range(self.num_classes)), colorscale="Blues"))
+            fig_cm_before.update_layout(title="Confusion Matrix Before Fine-tuning", xaxis_title="Predicted", yaxis_title="True")
+            fig_cm_before.show()
+
+        # Отображение confusion matrix после финетюнинга
+        if hasattr(self, "cm_after"):
+            fig_cm_after = go.Figure(data=go.Heatmap(z=self.cm_after, x=list(range(self.num_classes)), y=list(range(self.num_classes)), colorscale="Blues"))
+            fig_cm_after.update_layout(title="Confusion Matrix After Fine-tuning", xaxis_title="Predicted", yaxis_title="True")
+            fig_cm_after.show()
 
     def perform_full_cycle(self, train_subset, test_subset, fine_tune_epochs=3, fine_tune_lr=0.0005):
         """
@@ -456,6 +477,11 @@ class Trainer:
         print(f"{prefix} оценки модели на тестовом наборе:")
         acc, error_rate, pred_all, target_all = self.evaluate_combined_model(self.test_loader)
         self.accuracy_per_class(pred_all, target_all)
+        cm = confusion_matrix(target_all, pred_all, labels=list(range(self.num_classes)))
+        if after_finetune:
+            self.cm_after = cm
+        else:
+            self.cm_before = cm
 
     def fine_tune_encoder_after_cycle(self, fine_tune_epochs=3, fine_tune_lr=0.0005):
         # Создаём выборку для дообучения
