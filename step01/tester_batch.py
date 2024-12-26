@@ -198,7 +198,7 @@ def main():
     parser = argparse.ArgumentParser(description="Test model on generated questions.")
     parser.add_argument("--language", type=str, default="en", help="Language code (e.g., en, ru).")
     parser.add_argument("--questions_file", type=str, default="questions_data_en.jsonl", help="Path to the generated questions JSONL file.")
-    parser.add_argument("--model", type=str, default="gpt-3.5-turbo", help='Model name: "gpt-4o", "gpt-4o-2024-05-13", "gpt-3.5-turbo", "gpt-4"')
+    parser.add_argument("--model", type=str, default="gpt-4o", help='Model name: "gpt-4o", "gpt-4o-2024-05-13", "gpt-3.5-turbo", "gpt-4"')
     parser.add_argument("--output_file", type=str, default="test_results.jsonl", help="Output file for test results.")
     parser.add_argument("--temperature", type=float, default=0.5, help="Inference temperature.")
     parser.add_argument("--session_id", type=str, required=True, help="Identifier for the test session.")
