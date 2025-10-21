@@ -51,26 +51,45 @@ def generate_questions(client, language, num_questions, field_of_knowledge, subf
     # Modify the prompt to exclude field, subfield, and subject from the output
     # Also, instruct the model to use short keys for brevity
     prompt_template = f"""
+System
+You are a careful generator of context-dependent QA items. Output ONLY valid JSON as specified. Do not add explanations, comments, markdown, or extra keys.
+
+User
 Objective: In the subject "{subject}" of the subfield "{subfield}" in "{field_of_knowledge}", generate {num_questions} questions where the answer depends on the context or set of assumptions.
 
-Instructions:
-- Create questions that can have different answers based on different contexts or perspectives. The questions must allow a finite number of possible answers.
-- For each question, provide at least two contexts that lead to different answers.
-- Question without context should also have (obvious or default) answer (don't require information from the contexts).
-- Provide the answer for each context.
-- Ensure all answers are correct.
-- Answers should be concise, not more than two words or numbers.
-- Provide the output in JSON format with the following structure:
+Hard rules (must all hold):
+R1. Each question has 2–4 contexts in "v". Contexts must change the interpretation (paradigm/assumptions), not merely add missing facts.
+R2. Provide a baseline answer "n" (answer with no context). It MUST be semantically the same as one of the context answers in "v".
+R3. Answers are DISTINCT across contexts after simple normalization: lowercase, trim, remove articles ("a/an/the"). If two answers would normalize to the same string, make them different or adjust contexts.
+R4. No leakage: a context must NOT contain its answer tokens (substring match after lowercasing). Do not hint the answer in the context text.
+R5. Orthogonality: contexts must be semantically different (e.g., different domains, number systems, units, definitions, paradigms), not near-duplicates.
+R6. Finite diversity: questions must allow a finite set of answers. Forbid vague answers like "depends", "unknown", "varies".
+R7. Concision: each answer ≤ 2 tokens (words or numbers). Use digits for numbers and canonical units/symbols where applicable.
+R8. Time-neutrality: avoid time/popularity/superlatives unless you include an explicit year in the context (ISO year). Prefer timeless facts.
+R9. Epistemic scope: keep contexts and answers within the stated field/subfield/subject; no myth/pop-culture unless the question explicitly frames such a paradigm.
+R10. Self-containment: each context is a short phrase/clause (≤ 12 words) that changes assumptions (e.g., "Real numbers", "Complex numbers", "Classical mechanics", "Relativistic regime"). No quotes of the answer, no "where the answer is ...".
+
+Self-check BEFORE output (do not print this checklist):
+C1. "q" is clear, answerable without context (yields "n").
+C2. "n" equals (after normalization) exactly one of the "a" values in "v".
+C3. All "a" are unique after normalization and each is ≤ 2 tokens.
+C4. No "a" appears as a substring in its paired "c" (lowercase check).
+C5. Contexts are mutually non-overlapping in meaning (not just adjectives/synonyms).
+C6. No time-sensitive phrasing unless an explicit year is present in the context.
+
+Output format (strict JSON, no trailing commas, no extra keys):
 [
-  {{
+  {
     "q": "Your question",
+    "n": "Baseline answer",
     "v": [
-      {{"c": "Context 1", "a": "Answer 1"}},
-      {{"c": "Context 2", "a": "Answer 2"}}
+      {"c": "Context 1", "a": "Answer 1"},
+      {"c": "Context 2", "a": "Answer 2"}
     ]
-  }}
+  }
 ]
-Please use only the keys "q" for question, "v" for variations, "c" for context, and "a" for answer.
+
+Generate exactly {num_questions} objects in a JSON array using ONLY the keys "q", "n", "v", "c", "a".
 """.strip()
 
     print(f"Prompt to model:\n{prompt_template}\n")
