@@ -74,6 +74,17 @@ def extract_json_block(reply: str) -> str:
     return s
 
 
+def print_block(title: str, text: str, max_len: int = 2000, color=typer.colors.BRIGHT_BLACK):
+    body = text or ""
+    trunc_note = ""
+    if len(body) > max_len:
+        trunc_note = f" [truncated {len(body) - max_len} chars]"
+        body = body[:max_len]
+    typer.secho(f"\n{title}{trunc_note}", fg=color)
+    typer.echo(body)
+    typer.secho("-" * 60, fg=color)
+
+
 def parse_json_items(reply: str) -> List[Dict]:
     s = extract_json_block(reply)
     try:
@@ -240,17 +251,66 @@ def get_client(api_key: str):
     return OpenAI(api_key=api_key)
 
 
-def call_openai(client, model: str, prompt: str, max_tokens: int = 3000, temperature: float = 0.7, seed: Optional[int] = None) -> str:
+# --- replace function signature & body of call_openai() ---
+def call_openai(
+    client,
+    model: str,
+    prompt: str,
+    max_tokens: int = 3000,
+    temperature: float = 0.7,
+    seed: Optional[int] = None,
+    log_prompt: bool = False,
+    log_response: bool = False,
+    truncate: int = 2000,
+) -> str:
+    """
+    Автопереключение max_completion_tokens/max_tokens + опциональные логи.
+    """
     msgs = [
         {"role": "system", "content": "You are an AI language model that generates questions."},
         {"role": "user", "content": prompt},
     ]
-    params = dict(model=model, messages=msgs, max_completion_tokens=max_tokens)  # temperature=temperature
-    # необязательный seed (не все модели поддержат; игнор безопасен)
+
+    if log_prompt:
+        print_block("[PROMPT → GPT]", prompt, max_len=truncate, color=typer.colors.CYAN)
+
+    def _try(params):
+        resp = client.chat.completions.create(**params)
+        content = resp.choices[0].message.content or ""
+        if log_response:
+            meta = f"(model={resp.model}, finish_reason={resp.choices[0].finish_reason})"
+            print_block(f"[GPT RESPONSE {meta}]", content, max_len=truncate, color=typer.colors.GREEN)
+        return content
+
+    # 1st attempt: use max_completion_tokens
+    params = dict(model=model, messages=msgs, temperature=temperature)
+    params["max_completion_tokens"] = max_tokens
     if seed is not None:
-        params["seed"] = seed  # type: ignore
-    resp = client.chat.completions.create(**params)
-    return resp.choices[0].message.content or ""
+        params["seed"] = seed  # not all models support; will retry without
+
+    try:
+        return _try(params)
+    except Exception as e1:
+        msg = f"{getattr(e1, 'message', '')} {e1}"
+        # retry once without seed if present
+        if "seed" in params:
+            params.pop("seed", None)
+            try:
+                return _try(params)
+            except Exception as e1b:
+                msg = f"{getattr(e1b, 'message', '')} {e1b}"
+        # fallback to legacy max_tokens
+        if "unsupported_parameter" in msg or "max_completion_tokens" in msg:
+            params.pop("max_completion_tokens", None)
+            params["max_tokens"] = max_tokens
+            try:
+                return _try(params)
+            except Exception as e2:
+                if "seed" in params:
+                    params.pop("seed", None)
+                    return _try(params)
+                raise
+        raise
 
 
 def backoff_sleep(attempt: int, base: float = 1.5, jitter: float = 0.25):
@@ -272,6 +332,10 @@ def generate_for_subject(
     temperature: float = 0.7,
     max_tokens: int = 3000,
     seed: Optional[int] = None,
+    log_prompt: bool = False,
+    log_response: bool = False,
+    log_json: bool = False,
+    truncate: int = 2000,
 ) -> List[Dict]:
     subj_name = subject.get("subject", "")
     prompt = build_generation_prompt(field, subfield, subj_name, num_q)
@@ -280,13 +344,27 @@ def generate_for_subject(
     last_err = None
     for attempt in range(max_retries + 1):
         try:
-            raw = call_openai(client, model, prompt, max_tokens=max_tokens, temperature=temperature, seed=seed)
-            items = parse_json_items(raw)
+            raw = call_openai(client, model, prompt, max_tokens=max_tokens, temperature=temperature, seed=seed, log_prompt=log_prompt, log_response=log_response, truncate=truncate)
+            # показать извлечённый JSON-блок
+            extracted = extract_json_block(raw)
+            if log_json:
+                print_block("[EXTRACTED JSON BLOCK]", extracted, max_len=truncate, color=typer.colors.MAGENTA)
+
+            items = parse_json_items(extracted)
             if not items:
-                raise ValueError("Empty generation result.")
+                raise ValueError(f"Empty generation result: parsed=0 (raw_len={len(raw)}, extracted_len={len(extracted)})")
+
             items_pp = postprocess_and_filter(items, field, subfield, subj_name, lang)
             if not items_pp:
-                raise ValueError("All generated items failed quick validation.")
+                # собрать причины по каждому item
+                reasons = []
+                for it in items:
+                    ok, errs = quick_validate_item(it)
+                    if not ok:
+                        reasons.append("|".join(errs))
+                reason_msg = "; ".join(reasons) or "failed quick validation"
+                raise ValueError(f"All generated items failed quick validation: {reason_msg}")
+
             return items_pp
         except Exception as e:
             last_err = e
@@ -312,6 +390,10 @@ def cmd_gen(
     max_retries: int = typer.Option(3, min=0, max=10),
     resume: bool = typer.Option(True, help="Пропускать уже обработанные (по f/s/j) в выходном файле."),
     max_subfields: int = typer.Option(2, min=0, help="Максимум subfields за один запуск (0 = без ограничений)."),
+    log_prompt: bool = typer.Option(True, help="Печатать в терминал отправленный промпт."),
+    log_response: bool = typer.Option(True, help="Печатать сырые ответы модели."),
+    log_json: bool = typer.Option(True, help="Печатать извлечённый JSON-блок."),
+    truncate: int = typer.Option(2000, min=200, max=20000, help="Макс. длина печатаемых блоков."),
 ):
     """
     Генерирует вопросы по всем subjects из field_data.json и дописывает в JSONL.
@@ -383,6 +465,10 @@ def cmd_gen(
                         temperature=temperature,
                         max_tokens=max_tokens,
                         seed=seed,
+                        log_prompt=log_prompt,
+                        log_response=log_response,
+                        log_json=log_json,
+                        truncate=truncate,
                     )
                     write_jsonl(out, items)
                     total += len(items)
@@ -421,6 +507,10 @@ def cmd_dryrun(
     temperature: float = typer.Option(0.7),
     max_tokens: int = typer.Option(2000),
     seed: Optional[int] = typer.Option(None),
+    log_prompt: bool = typer.Option(True, help="Печатать промпт."),
+    log_response: bool = typer.Option(True, help="Печатать ответы."),
+    log_json: bool = typer.Option(True, help="Печатать извлечённый JSON-блок."),
+    truncate: int = typer.Option(2000, min=200, max=20000),
 ):
     """Пробная генерация по одному subject без записи в файл (печатает результат в stdout)."""
     api_key = read_api_key()
@@ -429,7 +519,23 @@ def cmd_dryrun(
         raise typer.Exit(code=1)
     client = get_client(api_key)
     subj = {"subject": subject}
-    items = generate_for_subject(client, model, "en", field, subfield, subj, num_q=num_questions, max_retries=2, temperature=temperature, max_tokens=max_tokens, seed=seed)
+    items = generate_for_subject(
+        client,
+        model,
+        "en",
+        field,
+        subfield,
+        subj,
+        num_q=num_questions,
+        max_retries=2,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        seed=seed,
+        log_prompt=log_prompt,
+        log_response=log_response,
+        log_json=log_json,
+        truncate=truncate,
+    )
     typer.echo(json.dumps(items, ensure_ascii=False, indent=2))
 
 
