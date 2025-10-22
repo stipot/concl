@@ -20,7 +20,7 @@ DATA_DIR = "./step01/data"
 SECRETS = ".secrets.toml"
 DEFAULT_OUT_TMPL = "{model}_generated_questions_{lang}.jsonl"
 SUPPORTED_MODELS = [
-    "gpt-5",         # placeholder для будущих настроек
+    "gpt-5",  # placeholder для будущих настроек
     "gpt-4o",
     "gpt-4",
     "gpt-3.5-turbo",
@@ -28,6 +28,7 @@ SUPPORTED_MODELS = [
 
 # --------- Утилиты ---------
 WORD_RE = re.compile(r"\w+", flags=re.U | re.M)
+
 
 def read_api_key(path: str = SECRETS) -> Optional[str]:
     if not os.path.exists(path):
@@ -38,15 +39,19 @@ def read_api_key(path: str = SECRETS) -> Optional[str]:
     except Exception:
         return None
 
+
 def load_field_data(path: str) -> List[Dict]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def tokenize_words(s: str) -> List[str]:
     return [m.group(0) for m in WORD_RE.finditer((s or "").strip())]
 
+
 def now_iso() -> str:
     return dt.datetime.now().isoformat()
+
 
 def extract_json_block(reply: str) -> str:
     """Вырезает JSON-массив из ответа: убирает ```...``` и текст вокруг."""
@@ -68,6 +73,7 @@ def extract_json_block(reply: str) -> str:
         return f"[{m2.group(0).strip()}]"
     return s
 
+
 def parse_json_items(reply: str) -> List[Dict]:
     s = extract_json_block(reply)
     try:
@@ -88,6 +94,7 @@ def parse_json_items(reply: str) -> List[Dict]:
                 typer.secho(f"[WARN] Skip broken item #{i}", fg=typer.colors.YELLOW)
         return out
 
+
 def load_processed_subjects(output_path: str) -> set[Tuple[str, str, str]]:
     done: set[Tuple[str, str, str]] = set()
     if not os.path.exists(output_path):
@@ -101,18 +108,18 @@ def load_processed_subjects(output_path: str) -> set[Tuple[str, str, str]]:
                 obj = json.loads(line)
             except Exception:
                 continue
-            key = (str(obj.get("f","")).strip(),
-                   str(obj.get("s","")).strip(),
-                   str(obj.get("j","")).strip())
+            key = (str(obj.get("f", "")).strip(), str(obj.get("s", "")).strip(), str(obj.get("j", "")).strip())
             if all(key):
                 done.add(key)
     return done
+
 
 def write_jsonl(path: str, items: List[Dict]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         for it in items:
             f.write(json.dumps(it, ensure_ascii=False) + "\n")
+
 
 # --------- Мини-валидация (локальная, до большой валидации) ---------
 def quick_validate_item(item: Dict) -> Tuple[bool, List[str]]:
@@ -124,7 +131,7 @@ def quick_validate_item(item: Dict) -> Tuple[bool, List[str]]:
     - ответы различны (норм.).
     """
     errs: List[str] = []
-    q = str(item.get("q","")).strip()
+    q = str(item.get("q", "")).strip()
     v = item.get("v") or []
     n = item.get("n", None)
     if not q:
@@ -164,9 +171,8 @@ def quick_validate_item(item: Dict) -> Tuple[bool, List[str]]:
 
     return (len(errs) == 0), errs
 
-def postprocess_and_filter(items: List[Dict],
-                           field: str, subfield: str, subject: str,
-                           lang: str) -> List[Dict]:
+
+def postprocess_and_filter(items: List[Dict], field: str, subfield: str, subject: str, lang: str) -> List[Dict]:
     """Добавляет f/s/j/d и отбрасывает грубо невалидные записи."""
     out: List[Dict] = []
     ts = now_iso()
@@ -182,6 +188,7 @@ def postprocess_and_filter(items: List[Dict],
         # язык сейчас не добавляю, но можно it["lang"]=lang
         out.append(it)
     return out
+
 
 # --------- Промпт ---------
 def build_generation_prompt(field: str, subfield: str, subject: str, num_q: int) -> str:
@@ -224,43 +231,48 @@ Output format (strict JSON):
 Generate exactly {num_q} objects in a JSON array using ONLY the keys "q", "n", "v", "c", "a".
 """.strip()
 
+
 # --------- OpenAI клиент ---------
 def get_client(api_key: str):
     # openai>=1.0 стиль
     from openai import OpenAI
+
     return OpenAI(api_key=api_key)
 
-def call_openai(client, model: str, prompt: str,
-                max_tokens: int = 3000, temperature: float = 0.7,
-                seed: Optional[int] = None) -> str:
+
+def call_openai(client, model: str, prompt: str, max_tokens: int = 3000, temperature: float = 0.7, seed: Optional[int] = None) -> str:
     msgs = [
         {"role": "system", "content": "You are an AI language model that generates questions."},
         {"role": "user", "content": prompt},
     ]
-    params = dict(model=model, messages=msgs, max_tokens=max_tokens, temperature=temperature)
+    params = dict(model=model, messages=msgs, max_completion_tokens=max_tokens)  # temperature=temperature
     # необязательный seed (не все модели поддержат; игнор безопасен)
     if seed is not None:
         params["seed"] = seed  # type: ignore
     resp = client.chat.completions.create(**params)
     return resp.choices[0].message.content or ""
 
+
 def backoff_sleep(attempt: int, base: float = 1.5, jitter: float = 0.25):
     # экспоненциальная пауза с джиттером
-    t = (base ** attempt) + random.uniform(0, jitter)
+    t = (base**attempt) + random.uniform(0, jitter)
     time.sleep(min(t, 20.0))
 
+
 # --------- Основная генерация ---------
-def generate_for_subject(client,
-                         model: str,
-                         lang: str,
-                         field: str,
-                         subfield: str,
-                         subject: Dict,
-                         num_q: int,
-                         max_retries: int = 3,
-                         temperature: float = 0.7,
-                         max_tokens: int = 3000,
-                         seed: Optional[int] = None) -> List[Dict]:
+def generate_for_subject(
+    client,
+    model: str,
+    lang: str,
+    field: str,
+    subfield: str,
+    subject: Dict,
+    num_q: int,
+    max_retries: int = 3,
+    temperature: float = 0.7,
+    max_tokens: int = 3000,
+    seed: Optional[int] = None,
+) -> List[Dict]:
     subj_name = subject.get("subject", "")
     prompt = build_generation_prompt(field, subfield, subj_name, num_q)
     typer.secho(f"\n[GEN] {field} / {subfield} / {subj_name} -> {num_q}", fg=typer.colors.CYAN)
@@ -268,8 +280,7 @@ def generate_for_subject(client,
     last_err = None
     for attempt in range(max_retries + 1):
         try:
-            raw = call_openai(client, model, prompt, max_tokens=max_tokens,
-                              temperature=temperature, seed=seed)
+            raw = call_openai(client, model, prompt, max_tokens=max_tokens, temperature=temperature, seed=seed)
             items = parse_json_items(raw)
             if not items:
                 raise ValueError("Empty generation result.")
@@ -281,10 +292,11 @@ def generate_for_subject(client,
             last_err = e
             typer.secho(f"[WARN] Attempt {attempt+1}/{max_retries+1} failed: {e}", fg=typer.colors.YELLOW)
             if attempt < max_retries:
-                backoff_sleep(attempt+1)
+                backoff_sleep(attempt + 1)
             else:
                 break
     raise RuntimeError(f"Generation failed after {max_retries+1} attempts: {last_err}")
+
 
 # --------- Typer CLI ---------
 @app.command("gen")
@@ -324,7 +336,7 @@ def cmd_gen(
     total = 0
     skipped = 0
     subfields_processed = 0
-    stop_all = False    
+    stop_all = False
     for fok in field_data_list:
         field = fok.get("fok", "Unknown Field")
         sfoks = fok.get("sfoks", [])
@@ -338,7 +350,7 @@ def cmd_gen(
             # собрать список к обработке с учётом resume
             subjects_to_process = []
             for subject in subjects:
-                key = (field.strip(), subfield.strip(), str(subject.get("subject","")).strip())
+                key = (field.strip(), subfield.strip(), str(subject.get("subject", "")).strip())
                 if resume and key in processed:
                     skipped += 1
                     typer.secho(f"[SKIP] already processed: {key}", fg=typer.colors.BLUE)
@@ -357,13 +369,20 @@ def cmd_gen(
 
             # обработать все subjects этого subfield
             for subject in subjects_to_process:
-                key = (field.strip(), subfield.strip(), str(subject.get("subject","")).strip())
+                key = (field.strip(), subfield.strip(), str(subject.get("subject", "")).strip())
                 try:
                     items = generate_for_subject(
-                        client=client, model=model, lang=lang,
-                        field=field, subfield=subfield, subject=subject,
-                        num_q=num_questions, max_retries=max_retries,
-                        temperature=temperature, max_tokens=max_tokens, seed=seed
+                        client=client,
+                        model=model,
+                        lang=lang,
+                        field=field,
+                        subfield=subfield,
+                        subject=subject,
+                        num_q=num_questions,
+                        max_retries=max_retries,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        seed=seed,
                     )
                     write_jsonl(out, items)
                     total += len(items)
@@ -375,6 +394,7 @@ def cmd_gen(
             subfields_processed += 1
 
     typer.secho(f"\nDone. new items: {total}, skipped subjects: {skipped}", fg=typer.colors.GREEN)
+
 
 @app.command("resume")
 def cmd_resume_list(
@@ -389,6 +409,7 @@ def cmd_resume_list(
             typer.echo("...")
             break
         typer.echo(f"- {key}")
+
 
 @app.command("dryrun")
 def cmd_dryrun(
@@ -408,10 +429,9 @@ def cmd_dryrun(
         raise typer.Exit(code=1)
     client = get_client(api_key)
     subj = {"subject": subject}
-    items = generate_for_subject(client, model, "en", field, subfield, subj,
-                                 num_q=num_questions, max_retries=2,
-                                 temperature=temperature, max_tokens=max_tokens, seed=seed)
+    items = generate_for_subject(client, model, "en", field, subfield, subj, num_q=num_questions, max_retries=2, temperature=temperature, max_tokens=max_tokens, seed=seed)
     typer.echo(json.dumps(items, ensure_ascii=False, indent=2))
+
 
 if __name__ == "__main__":
     app()
