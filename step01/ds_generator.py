@@ -9,7 +9,7 @@ import re
 import time
 import random
 import datetime as dt
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Optional, Dict, List, Tuple
 
 import typer
 import toml
@@ -28,6 +28,36 @@ SUPPORTED_MODELS = [
 
 # --------- Утилиты ---------
 WORD_RE = re.compile(r"\w+", flags=re.U | re.M)
+
+
+def qa_batch_schema(expected_max: int | None = None) -> Dict[str, Any]:
+    """Топ-уровень — object c полем items: array[{q,n,v[{c,a}]}]."""
+    qa_item = {
+        "type": "object",
+        "properties": {
+            "q": {"type": "string", "minLength": 3},
+            "n": {"type": "string", "minLength": 1},
+            "v": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"c": {"type": "string", "minLength": 3}, "a": {"type": "string", "minLength": 1}},
+                    "required": ["c", "a"],
+                    "additionalProperties": False,
+                },
+                "minItems": 2,
+                "maxItems": 4,
+            },
+        },
+        "required": ["q", "n", "v"],
+        "additionalProperties": False,
+    }
+
+    schema: Dict[str, Any] = {"type": "object", "properties": {"items": {"type": "array", "items": qa_item, "minItems": 1}}, "required": ["items"], "additionalProperties": False}
+    if isinstance(expected_max, int) and expected_max > 0:
+        schema["properties"]["items"]["maxItems"] = expected_max
+
+    return {"name": "qa_batch", "schema": schema, "strict": True}
 
 
 def read_api_key(path: str = SECRETS) -> Optional[str]:
@@ -54,8 +84,16 @@ def now_iso() -> str:
 
 
 def extract_json_block(reply: str) -> str:
-    """Вырезает JSON-массив из ответа: убирает ```...``` и текст вокруг."""
+    """
+    Пытается вернуть корректный JSON (объект или массив) из ответа модели.
+    1) снимает ``` и лишний текст вокруг;
+    2) если строка начинается с { ... } или [ ... ] — НЕ ищет внутренние массивы;
+    3) если обнаружен одиночный объект — вернёт его как есть (объект),
+       парсер затем сам обернёт в список при необходимости.
+    """
     s = (reply or "").strip()
+
+    # снять ограждения ```json ... ``` / ``` ... ```
     if s.startswith("```json"):
         s = s[7:]
         if s.endswith("```"):
@@ -64,14 +102,118 @@ def extract_json_block(reply: str) -> str:
         s = s[3:]
         if s.endswith("```"):
             s = s[:-3]
-    m = re.search(r"\[.*\]", s, re.DOTALL)
-    if m:
-        return m.group(0).strip()
-    # попытка спасти одиночный объект
-    m2 = re.search(r"\{.*\}", s, re.DOTALL)
-    if m2:
-        return f"[{m2.group(0).strip()}]"
+    s = s.strip()
+
+    # если уже объект или массив — вернём как есть (без поиска внутренних [])
+    if s.startswith("{") and s.endswith("}"):
+        return s
+    if s.startswith("[") and s.endswith("]"):
+        return s
+
+    # попытка аккуратно вырезать верхнеуровневый объект по балансировке скобок
+    def _extract_top_level_obj(txt: str) -> Optional[str]:
+        depth = 0
+        start = None
+        for i, ch in enumerate(txt):
+            if ch == "{":
+                if start is None:
+                    start = i
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0 and start is not None:
+                    return txt[start : i + 1]
+        return None
+
+    def _extract_top_level_arr(txt: str) -> Optional[str]:
+        depth = 0
+        start = None
+        for i, ch in enumerate(txt):
+            if ch == "[":
+                if start is None:
+                    start = i
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0 and start is not None:
+                    return txt[start : i + 1]
+        return None
+
+    obj = _extract_top_level_obj(s)
+    if obj:
+        return obj
+    arr = _extract_top_level_arr(s)
+    if arr:
+        return arr
+
+    # ничего уверенного — возвращаем как есть (позже fallback попытается разобрать кусочно)
     return s
+
+
+def _create_with_raw_response(client, **params):
+    """
+    Пытается вызвать chat.completions.with_raw_response.create(...)
+    и вернуть (parsed_resp, raw_status, raw_headers, raw_text).
+    Если .with_raw_response недоступен — падает обратно на обычный create,
+    возвращая raw_* как None.
+    """
+    try:
+        raw_api = getattr(client.chat.completions, "with_raw_response", None)
+        if raw_api and hasattr(raw_api, "create"):
+            raw = raw_api.create(**params)
+            # raw.* доступен до parse()
+            status = getattr(raw, "status_code", None)
+            headers = dict(getattr(raw, "headers", {}) or {})
+            try:
+                raw_text = raw.text  # тело целиком как строка
+            except Exception:
+                raw_text = None
+            # Парсим в привычный объект SDK
+            resp = raw.parse()
+            return resp, status, headers, raw_text
+    except Exception as e:
+        # если сырой режим не удался — логнем и пойдём обычным путём
+        print_block("[RAW HTTP ERROR]", f"{e}", max_len=2000, color=typer.colors.RED)
+
+    # fallback: обычный вызов, без сырого тела
+    resp = client.chat.completions.create(**params)
+    return resp, None, None, None
+
+
+def _dump_choice_debug(resp):
+    try:
+        ch = resp.choices[0]
+        msg = ch.message
+        meta_lines = [
+            f"id={getattr(resp, 'id', None)}",
+            f"model={getattr(resp, 'model', None)}",
+            f"finish_reason={getattr(ch, 'finish_reason', None)}",
+            f"role={getattr(msg, 'role', None)}",
+            f"has_tool_calls={bool(getattr(msg, 'tool_calls', None))}",
+            f"has_refusal={bool(getattr(msg, 'refusal', None))}",
+            f"content_len={len(msg.content or '')}",
+        ]
+        # usage может отсутствовать
+        try:
+            usage = resp.usage
+            if usage:
+                meta_lines.append(f"usage.prompt_tokens={getattr(usage, 'prompt_tokens', None)}")
+                meta_lines.append(f"usage.completion_tokens={getattr(usage, 'completion_tokens', None)}")
+                meta_lines.append(f"usage.total_tokens={getattr(usage, 'total_tokens', None)}")
+        except Exception:
+            pass
+
+        # выведем refusal/tool_calls если есть
+        extras = []
+        if getattr(msg, "refusal", None):
+            extras.append(f"refusal={msg.refusal}")
+        if getattr(msg, "tool_calls", None):
+            extras.append(f"tool_calls={msg.tool_calls}")
+        debug_text = "\n".join(meta_lines + extras)
+
+        print_block("[GPT META]", debug_text, max_len=5000, color=typer.colors.YELLOW)
+    except Exception as e:
+        print_block("[GPT META ERROR]", f"{e}", max_len=1000, color=typer.colors.RED)
 
 
 def print_block(title: str, text: str, max_len: int = 2000, color=typer.colors.BRIGHT_BLACK):
@@ -89,21 +231,22 @@ def parse_json_items(reply: str) -> List[Dict]:
     s = extract_json_block(reply)
     try:
         obj = json.loads(s)
-        if isinstance(obj, dict):
-            return [obj]
-        if isinstance(obj, list):
-            return [x for x in obj if isinstance(x, dict)]
-        return []
     except json.JSONDecodeError:
-        # fallback: выдёргиваем объекты
-        parts = re.findall(r"\{.*?\}(?=,\s*\{|\s*$)", s, re.DOTALL)
-        out: List[Dict] = []
-        for i, p in enumerate(parts):
-            try:
-                out.append(json.loads(p))
-            except json.JSONDecodeError:
-                typer.secho(f"[WARN] Skip broken item #{i}", fg=typer.colors.YELLOW)
-        return out
+        return []
+
+    # Корневой объект с массивом items (Structured Outputs)
+    if isinstance(obj, dict) and "items" in obj and isinstance(obj["items"], list):
+        return [x for x in obj["items"] if isinstance(x, dict)]
+
+    # Одиночный объект (допускаем, но это не должно случаться при json_schema)
+    if isinstance(obj, dict):
+        return [obj]
+
+    # Уже массив объектов
+    if isinstance(obj, list):
+        return [x for x in obj if isinstance(x, dict)]
+
+    return []
 
 
 def load_processed_subjects(output_path: str) -> set[Tuple[str, str, str]]:
@@ -129,7 +272,9 @@ def write_jsonl(path: str, items: List[Dict]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         for it in items:
-            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+            line = json.dumps(it, ensure_ascii=False)
+            f.write(line + "\n")
+    typer.secho(f"[FILE] +{len(items)} lines → {path}", fg=typer.colors.BLUE)
 
 
 # --------- Мини-валидация (локальная, до большой валидации) ---------
@@ -205,7 +350,8 @@ def postprocess_and_filter(items: List[Dict], field: str, subfield: str, subject
 def build_generation_prompt(field: str, subfield: str, subject: str, num_q: int) -> str:
     return f"""
 System
-You are a careful generator of context-dependent QA items. Output ONLY valid JSON as specified. Do not add explanations, comments, markdown, or extra keys.
+You are a careful generator of context-dependent QA items.
+Return ONLY a JSON object with one key "items", where "items" is an array of {num_q} objects. No extra text/markdown.
 
 User
 Objective: In the subject "{subject}" of the subfield "{subfield}" in "{field}", generate {num_q} questions where the answer depends on the context or set of assumptions.
@@ -228,18 +374,20 @@ C3. All "a" unique (normalized), each ≤2 tokens. C4. No "a" substring inside i
 C5. Contexts are mutually non-overlapping in meaning. C6. No time-sensitive phrasing without explicit year.
 
 Output format (strict JSON):
-[
-  {{
-    "q": "Your question",
-    "n": "Baseline answer",
-    "v": [
-      {{"c": "Context 1", "a": "Answer 1"}},
-      {{"c": "Context 2", "a": "Answer 2"}}
-    ]
-  }}
-]
+{{
+  "items": [
+    {{
+      "q": "Your question",
+      "n": "Baseline answer",
+      "v": [
+        {{"c": "Context 1", "a": "Answer 1"}},
+        {{"c": "Context 2", "a": "Answer 2"}}
+      ]
+    }}
+  ]
+}}
 
-Generate exactly {num_q} objects in a JSON array using ONLY the keys "q", "n", "v", "c", "a".
+Generate exactly {num_q} objects inside "items" using ONLY the keys "q","n","v","c","a".
 """.strip()
 
 
@@ -251,65 +399,145 @@ def get_client(api_key: str):
     return OpenAI(api_key=api_key)
 
 
+def plan_batch_size(prompt_tokens: int, max_tokens: int, requested: int, est_per_item: int = 90) -> int:
+    """
+    Простейший планировщик размера батча.
+    - est_per_item: грубая оценка токенов на 1 объект (ответы+контексты)
+    - держим запас 256 токенов на «служебку»
+    """
+    budget = max(0, int(max_tokens) - 256)
+    if budget <= 0:
+        return 1
+    cap = max(1, budget // max(1, est_per_item))
+    return max(1, min(requested, cap))
+
+
 # --- replace function signature & body of call_openai() ---
 def call_openai(
     client,
     model: str,
     prompt: str,
-    max_tokens: int = 3000,
+    max_tokens: int = 5000,
     temperature: float = 0.7,
     seed: Optional[int] = None,
     log_prompt: bool = False,
     log_response: bool = False,
     truncate: int = 2000,
-) -> str:
-    """
-    Автопереключение max_completion_tokens/max_tokens + опциональные логи.
-    """
-    msgs = [
+    expected_batch: Optional[int] = None,  # <— НОВОЕ
+) -> Tuple[str, Dict[str, Any]]:
+
+    # сообщения — явно типизируем
+    msgs: List[Dict[str, str]] = [
         {"role": "system", "content": "You are an AI language model that generates questions."},
         {"role": "user", "content": prompt},
     ]
 
+    # --- ВАЖНО: params как dict[str, Any], иначе типизатор «зажмёт» тип значений
+    params: Dict[str, Any] = {"model": model, "messages": msgs}
+    # просим сразу JSON-объект (уменьшает накладные расходы против json_schema)
+    params["response_format"] = {"type": "json_schema", "json_schema": qa_batch_schema(expected_batch)}
+
+    # температура: не отправляем 1.0, т.к. часть моделей поддерживает только дефолт
+    if temperature is not None and float(temperature) != 1.0:
+        params["temperature"] = float(temperature)
+
+    # первая попытка — modern: max_completion_tokens
+    params["max_completion_tokens"] = int(max_tokens)
+    if seed is not None:
+        params["seed"] = int(seed)
+
+    def _try(p: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        try:
+            resp, status, headers, raw_text = _create_with_raw_response(client, **p)
+        except TypeError as te:
+            # на всякий случай убираем response_format и пробуем снова
+            if "response_format" in p:
+                p = dict(p)
+                p.pop("response_format", None)
+                resp, status, headers, raw_text = _create_with_raw_response(client, **p)
+            else:
+                raise
+
+        # Метаданные HTTP
+        if status is not None:
+            # печатаем только пару безопасных заголовков
+            safe_headers = {k: v for k, v in (headers or {}).items() if k.lower() in {"content-type", "x-request-id"}}
+            raw_head = f"status={status}\n" + "\n".join(f"{k}: {v}" for k, v in safe_headers.items())
+            print_block("[RAW HTTP META]", raw_head, max_len=2000, color=typer.colors.YELLOW)
+            if raw_text:
+                # тело может быть большим — но это ровно то, что ты просил
+                print_block("[RAW HTTP BODY]", raw_text, max_len=8000, color=typer.colors.BRIGHT_BLACK)
+
+        _dump_choice_debug(resp)
+        choice = resp.choices[0]
+        content = choice.message.content or ""
+        finish = getattr(choice, "finish_reason", None)
+        usage = getattr(resp, "usage", None)
+        meta: Dict[str, Any] = {
+            "id": getattr(resp, "id", None),
+            "model": getattr(resp, "model", None),
+            "finish_reason": finish,
+            "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+            "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+            "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
+        }
+        # Явная диагностика пустого контента
+        if not content.strip():
+            # Печатаем короткий маркер, чтобы в логах было видно сразу
+            print_block("[GPT RESPONSE EMPTY]", f"finish_reason={finish}", max_len=200, color=typer.colors.RED)
+            raise ValueError(f"Empty content (finish_reason={finish})")
+        if log_response:
+            meta_str = f"(model={resp.model}, finish_reason={resp.choices[0].finish_reason})"
+            print_block(f"[GPT RESPONSE {meta_str}]", content, max_len=truncate, color=typer.colors.GREEN)
+        return content, meta
+
+    # лог промпта
     if log_prompt:
         print_block("[PROMPT → GPT]", prompt, max_len=truncate, color=typer.colors.CYAN)
-
-    def _try(params):
-        resp = client.chat.completions.create(**params)
-        content = resp.choices[0].message.content or ""
-        if log_response:
-            meta = f"(model={resp.model}, finish_reason={resp.choices[0].finish_reason})"
-            print_block(f"[GPT RESPONSE {meta}]", content, max_len=truncate, color=typer.colors.GREEN)
-        return content
-
-    # 1st attempt: use max_completion_tokens
-    params = dict(model=model, messages=msgs, temperature=temperature)
-    params["max_completion_tokens"] = max_tokens
-    if seed is not None:
-        params["seed"] = seed  # not all models support; will retry without
 
     try:
         return _try(params)
     except Exception as e1:
+        # Если SDK пробросил HTTP-ошибку — попробуем вывести тело
+        resp_obj = getattr(e1, "response", None)
+        if resp_obj is not None:
+            try:
+                status = getattr(resp_obj, "status_code", None)
+                text = getattr(resp_obj, "text", None)
+                if text:
+                    print_block("[RAW HTTP ERROR BODY]", f"status={status}\n{text}", max_len=8000, color=typer.colors.RED)
+            except Exception:
+                pass
         msg = f"{getattr(e1, 'message', '')} {e1}"
-        # retry once without seed if present
+
+        # температура не поддерживается — убрать
+        if "unsupported_value" in msg and "temperature" in msg:
+            params.pop("temperature", None)
+            try:
+                return _try(params)
+            except Exception as e1c:
+                msg = f"{getattr(e1c, 'message', '')} {e1c}"
+
+        # seed не поддерживается — убрать
         if "seed" in params:
             params.pop("seed", None)
             try:
                 return _try(params)
             except Exception as e1b:
                 msg = f"{getattr(e1b, 'message', '')} {e1b}"
-        # fallback to legacy max_tokens
+
+        # переключение на legacy max_tokens
         if "unsupported_parameter" in msg or "max_completion_tokens" in msg:
             params.pop("max_completion_tokens", None)
-            params["max_tokens"] = max_tokens
+            params["max_tokens"] = int(max_tokens)
             try:
                 return _try(params)
             except Exception as e2:
-                if "seed" in params:
-                    params.pop("seed", None)
-                    return _try(params)
-                raise
+                msg2 = f"{getattr(e2, 'message', '')} {e2}"
+                # повторно убираем temperature/seed на всякий
+                params.pop("temperature", None)
+                params.pop("seed", None)
+                return _try(params)
         raise
 
 
@@ -338,13 +566,32 @@ def generate_for_subject(
     truncate: int = 2000,
 ) -> List[Dict]:
     subj_name = subject.get("subject", "")
-    prompt = build_generation_prompt(field, subfield, subj_name, num_q)
-    typer.secho(f"\n[GEN] {field} / {subfield} / {subj_name} -> {num_q}", fg=typer.colors.CYAN)
+    cur_num_q = int(num_q)
+    remaining = int(num_q)
+    typer.secho(f"\n[GEN] {field} / {subfield} / {subj_name} -> {cur_num_q}", fg=typer.colors.CYAN)
 
+    results: List[Dict] = []
     last_err = None
-    for attempt in range(max_retries + 1):
+    attempt = 0
+    while remaining > 0 and attempt <= max_retries:
         try:
-            raw = call_openai(client, model, prompt, max_tokens=max_tokens, temperature=temperature, seed=seed, log_prompt=log_prompt, log_response=log_response, truncate=truncate)
+            # планируем безопасный размер батча
+            # примечание: prompt токены не знаем заранее → берём эвристику
+            batch = plan_batch_size(prompt_tokens=600, max_tokens=max_tokens, requested=remaining, est_per_item=90)
+            typer.secho(f"[BATCH] target={remaining}, batch={batch}", fg=typer.colors.MAGENTA)
+
+            prompt = build_generation_prompt(field, subfield, subj_name, batch)
+            raw, meta = call_openai(
+                client,
+                model,
+                prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                seed=seed,
+                log_prompt=log_prompt,
+                log_response=log_response,
+                truncate=truncate,
+            )
             # показать извлечённый JSON-блок
             extracted = extract_json_block(raw)
             if log_json:
@@ -352,7 +599,9 @@ def generate_for_subject(
 
             items = parse_json_items(extracted)
             if not items:
-                raise ValueError(f"Empty generation result: parsed=0 (raw_len={len(raw)}, extracted_len={len(extracted)})")
+                raise ValueError(
+                    f"Empty generation result: parsed=0 (raw_len={len(raw)}, extracted_len={len(extracted)}; finish_reason={meta.get('finish_reason')}; completion_tokens={meta.get('completion_tokens')})"
+                )
 
             items_pp = postprocess_and_filter(items, field, subfield, subj_name, lang)
             if not items_pp:
@@ -365,15 +614,30 @@ def generate_for_subject(
                 reason_msg = "; ".join(reasons) or "failed quick validation"
                 raise ValueError(f"All generated items failed quick validation: {reason_msg}")
 
-            return items_pp
+            results.extend(items_pp)
+            remaining -= len(items_pp)
+            attempt = 0  # успешный батч сбрасывает счётчик ошибок
+            continue
         except Exception as e:
             last_err = e
             typer.secho(f"[WARN] Attempt {attempt+1}/{max_retries+1} failed: {e}", fg=typer.colors.YELLOW)
+            attempt += 1
+            msg = str(e)
+            # эвристика: либо finish_reason=length, либо completion_tokens≈max_tokens
+            if ("finish_reason=length" in msg) or ("Empty content" in msg) or ("parsed=0" in msg):
+                # ужимаем оценку per-item, чтобы следующий plan_batch_size дал меньший батч
+                # (простой способ — снизить max_tokens локально, если можно)
+                if max_tokens > 1024:
+                    max_tokens = max(1024, int(max_tokens * 0.9))
+                    typer.secho(f"[ADAPT] Shrink max_tokens to {max_tokens}", fg=typer.colors.MAGENTA)
+
             if attempt < max_retries:
                 backoff_sleep(attempt + 1)
             else:
                 break
-    raise RuntimeError(f"Generation failed after {max_retries+1} attempts: {last_err}")
+    if results:
+        return results
+    raise RuntimeError(f"Generation failed: {last_err}")
 
 
 # --------- Typer CLI ---------
@@ -384,7 +648,7 @@ def cmd_gen(
     model: str = typer.Option("gpt-5", help=f"Имя модели. Поддерживаемые: {', '.join(SUPPORTED_MODELS)}"),
     lang: str = typer.Option("en", help="Код языка для пометки данных в имени файла."),
     num_questions: int = typer.Option(30, min=1, max=50, help="Сколько вопросов на один subject."),
-    temperature: float = typer.Option(0.7, min=0.0, max=2.0),
+    temperature: float = typer.Option(1.0, min=0.0, max=2.0, help="Температура генерации. Некоторые модели поддерживают только значение 1; в таком случае параметр будет опущен."),
     max_tokens: int = typer.Option(3000, min=512, max=8192),
     seed: Optional[int] = typer.Option(None, help="Фиксировать seed (если поддерживается)."),
     max_retries: int = typer.Option(3, min=0, max=10),

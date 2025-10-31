@@ -40,7 +40,7 @@ def test_model(client, questions_data, model, temperature, session_id):
         response_no_context = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt_no_context}],
-            max_tokens=50,
+            max_completion_tokens=50,
             temperature=temperature,
         )
 
@@ -57,7 +57,7 @@ def test_model(client, questions_data, model, temperature, session_id):
             response_with_context = client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt_with_context}],
-                max_tokens=50,
+                max_completion_tokens=50,
                 temperature=temperature,
             )
 
