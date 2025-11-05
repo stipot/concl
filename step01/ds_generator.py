@@ -269,12 +269,24 @@ def load_processed_subjects(output_path: str) -> set[Tuple[str, str, str]]:
 
 
 def write_jsonl(path: str, items: List[Dict]) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
+    # безопасно создаём папку только если она непуста
+    dir_ = os.path.dirname(path)
+    if dir_:
+        os.makedirs(dir_, exist_ok=True)
+    abs_path = os.path.abspath(path)
+    with open(abs_path, "a", encoding="utf-8") as f:
         for it in items:
             line = json.dumps(it, ensure_ascii=False)
             f.write(line + "\n")
-    typer.secho(f"[FILE] +{len(items)} lines → {path}", fg=typer.colors.BLUE)
+    typer.secho(f"[FILE] +{len(items)} lines → {abs_path}", fg=typer.colors.BLUE)
+
+
+@app.callback(invoke_without_command=True)
+def _print_cwd(ctx: typer.Context):
+    # Печатаем рабочую директорию один раз, это помогает ловить относительные пути
+    typer.secho(f"[CWD] {os.path.abspath(os.getcwd())}", fg=typer.colors.BRIGHT_BLACK)
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
 
 
 # --------- Мини-валидация (локальная, до большой валидации) ---------
@@ -306,7 +318,7 @@ def quick_validate_item(item: Dict) -> Tuple[bool, List[str]]:
                 errs.append(f"v[{i}].c.empty")
             if not a:
                 errs.append(f"v[{i}].a.empty")
-            if len(tokenize_words(a)) > 2:
+            if len(tokenize_words(a)) > 10:
                 errs.append(f"v[{i}].a.too_long")
             # утечка
             if a and c and a.lower() in c.lower():
@@ -328,22 +340,29 @@ def quick_validate_item(item: Dict) -> Tuple[bool, List[str]]:
     return (len(errs) == 0), errs
 
 
-def postprocess_and_filter(items: List[Dict], field: str, subfield: str, subject: str, lang: str) -> List[Dict]:
-    """Добавляет f/s/j/d и отбрасывает грубо невалидные записи."""
-    out: List[Dict] = []
+def partition_and_annotate(items: List[Dict], field: str, subfield: str, subject: str, lang: str) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Добавляет служебные поля и теги аномалий:
+      - для всех: f/s/j/d;
+      - для всех: t = список кодов аномалий quick_validate_item (пустой список для валидных).
+    Возвращает (valid_items, invalid_items).
+    """
+    valid: List[Dict] = []
+    invalid: List[Dict] = []
     ts = now_iso()
     for it in items:
         ok, errs = quick_validate_item(it)
-        if not ok:
-            typer.secho(f"[WARN] Drop invalid item: {errs}", fg=typer.colors.YELLOW)
-            continue
         it["f"] = field
         it["s"] = subfield
         it["j"] = subject
         it["d"] = ts
-        # язык сейчас не добавляю, но можно it["lang"]=lang
-        out.append(it)
-    return out
+        it["t"] = list(errs) if not ok else []
+        # язык можно добавить при необходимости: it["lang"] = lang
+        if ok:
+            valid.append(it)
+        else:
+            invalid.append(it)
+    return valid, invalid
 
 
 # --------- Промпт ---------
@@ -351,27 +370,33 @@ def build_generation_prompt(field: str, subfield: str, subject: str, num_q: int)
     return f"""
 System
 You are a careful generator of context-dependent QA items.
-Return ONLY a JSON object with one key "items", where "items" is an array of {num_q} objects. No extra text/markdown.
+Return ONLY a JSON object with one key "items", where "items" is an array of {num_q} objects. Each object represents one question with multiple paradigm-dependent interpretations. No extra text/markdown.
 
 User
-Objective: In the subject "{subject}" of the subfield "{subfield}" in "{field}", generate {num_q} questions where the answer depends on the context or set of assumptions.
+Objective: In the subject "{subject}" of the subfield "{subfield}" in "{field}", generate {num_q} items. Each item has one question whose answer depends on the underlying rules/assumptions (paradigm), not on missing facts.
 
 Hard rules (must all hold):
-R1. Each question has 2–4 contexts in "v". Contexts must change the interpretation (paradigm/assumptions), not merely add missing facts.
-R2. Provide a baseline answer "n" (answer with no context). It MUST be semantically the same as one of the context answers in "v".
+R1. Each question has 2–4 contexts in "v". Contexts must change the governing interpretation (different rules/definitions/units/number systems/paradigms), not just add examples or facts. Everyday domains are allowed only if they imply a distinct rule-system.
+R2. Baseline answer "n":
+    R2a. "n" is the answer under the conventional (default) interpretation commonly assumed for the question.
+    R2b. Exactly one context in "v" must instantiate that same default interpretation, so that "n" == its "a".
+    R2c. All other contexts must be non-default interpretations yielding different answers.
 R3. Answers are DISTINCT across contexts after simple normalization: lowercase, trim, remove articles ("a/an/the").
-R4. No leakage: a context must NOT contain its answer tokens (substring match after lowercasing).
-R5. Orthogonality: contexts must be semantically different (domains/definitions/number systems/units/paradigms).
+R4. No leakage: a context must NOT contain its own answer tokens (substring match after lowercasing).
+R5. Orthogonality: contexts must be semantically different (domains/definitions/number systems/units/paradigms), not minor variants.
 R6. Finite diversity: forbid vague answers like "depends", "unknown", "varies".
 R7. Concision: each answer ≤ 2 tokens (words or numbers); use digits and canonical symbols where applicable.
 R8. Time-neutrality: avoid time/popularity/superlatives unless an explicit year (YYYY) is present in the context.
-R9. Epistemic scope: keep within the stated field/subfield/subject unless the context explicitly frames another paradigm.
-R10. Self-containment: each context is a short phrase (≤ 12 words) that changes assumptions. No quotes of the answer.
+R9. Epistemic scope: keep within the stated field/subfield/subject unless a context explicitly frames another formal paradigm.
+R10. Self-containment: each context is a short phrase (≤ 12 words) that changes assumptions. Do not hint at the answer; do not quote it.
 
 Self-check BEFORE output (do not print this checklist):
-C1. "q" is clear and yields "n" without contexts. C2. "n" equals exactly one "a" in "v" after normalization.
-C3. All "a" unique (normalized), each ≤2 tokens. C4. No "a" substring inside its paired "c" (lowercased).
-C5. Contexts are mutually non-overlapping in meaning. C6. No time-sensitive phrasing without explicit year.
+C1. "q" is clear and yields "n" under a default interpretation.
+C2. Exactly one context matches the default so that "n" equals one "a".
+C3. All "a" unique after normalization; each ≤ 2 tokens.
+C4. No "a" appears as a substring in its own "c" (lowercased).
+C5. Contexts change rules/units/definitions and are mutually non-overlapping.
+C6. No time-sensitive phrasing without explicit year.
 
 Output format (strict JSON):
 {{
@@ -387,7 +412,27 @@ Output format (strict JSON):
   ]
 }}
 
+Example:
+[{{
+  "q": "What is the value of 2×2?",
+  "n": "4",
+  "v": [
+    {{"c": "In standard decimal arithmetic", "a": "4"}},
+    {{"c": "In arithmetic modulo 3", "a": "1"}},
+    {{"c": "Shown in base-4 numerals", "a": "10"}}
+  ]
+}},
+{{
+  "q": "What color model encodes a single on-screen element?",
+  "n": "RGB",
+  "v": [
+    {{"c": "In emissive display pipelines", "a": "RGB"}},
+    {{"c": "In subtractive print workflows", "a": "CMYK"}},
+    {{"c": "In cylindrical hue-saturation schemes", "a": "HSV"}}
+  ]
+}}]
 Generate exactly {num_q} objects inside "items" using ONLY the keys "q","n","v","c","a".
+Prefer 3 contexts when natural; 2 is acceptable if both are clearly distinct paradigms.
 """.strip()
 
 
@@ -564,13 +609,15 @@ def generate_for_subject(
     log_response: bool = False,
     log_json: bool = False,
     truncate: int = 2000,
-) -> List[Dict]:
+) -> Tuple[List[Dict], List[Dict]]:
     subj_name = subject.get("subject", "")
     cur_num_q = int(num_q)
     remaining = int(num_q)
     typer.secho(f"\n[GEN] {field} / {subfield} / {subj_name} -> {cur_num_q}", fg=typer.colors.CYAN)
 
     results: List[Dict] = []
+    results_valid: List[Dict] = []
+    results_invalid: List[Dict] = []
     last_err = None
     attempt = 0
     while remaining > 0 and attempt <= max_retries:
@@ -603,19 +650,19 @@ def generate_for_subject(
                     f"Empty generation result: parsed=0 (raw_len={len(raw)}, extracted_len={len(extracted)}; finish_reason={meta.get('finish_reason')}; completion_tokens={meta.get('completion_tokens')})"
                 )
 
-            items_pp = postprocess_and_filter(items, field, subfield, subj_name, lang)
-            if not items_pp:
-                # собрать причины по каждому item
-                reasons = []
-                for it in items:
-                    ok, errs = quick_validate_item(it)
-                    if not ok:
-                        reasons.append("|".join(errs))
-                reason_msg = "; ".join(reasons) or "failed quick validation"
-                raise ValueError(f"All generated items failed quick validation: {reason_msg}")
+            valid, invalid = partition_and_annotate(items, field, subfield, subj_name, lang)
+            # Логируем кратко статистику батча
+            if invalid:
+                typer.secho(f"[BATCH] valid={len(valid)} invalid={len(invalid)}", fg=typer.colors.YELLOW)
+            else:
+                typer.secho(f"[BATCH] valid={len(valid)}", fg=typer.colors.GREEN)
 
-            results.extend(items_pp)
-            remaining -= len(items_pp)
+            if not valid and not invalid:
+                raise ValueError("Empty generation result after partition.")
+
+            results_valid.extend(valid)
+            results_invalid.extend(invalid)
+            remaining -= len(valid)  # считаем план по валидным
             attempt = 0  # успешный батч сбрасывает счётчик ошибок
             continue
         except Exception as e:
@@ -635,8 +682,8 @@ def generate_for_subject(
                 backoff_sleep(attempt + 1)
             else:
                 break
-    if results:
-        return results
+    if results_valid or results_invalid:
+        return results_valid, results_invalid
     raise RuntimeError(f"Generation failed: {last_err}")
 
 
@@ -717,7 +764,7 @@ def cmd_gen(
             for subject in subjects_to_process:
                 key = (field.strip(), subfield.strip(), str(subject.get("subject", "")).strip())
                 try:
-                    items = generate_for_subject(
+                    valid_items, invalid_items = generate_for_subject(
                         client=client,
                         model=model,
                         lang=lang,
@@ -734,9 +781,16 @@ def cmd_gen(
                         log_json=log_json,
                         truncate=truncate,
                     )
-                    write_jsonl(out, items)
-                    total += len(items)
-                    typer.secho(f"[OK] wrote {len(items)} items → {out}", fg=typer.colors.GREEN)
+                    # пишем валидные
+                    if valid_items:
+                        write_jsonl(out, valid_items)
+                        total += len(valid_items)
+                        typer.secho(f"[OK] wrote {len(valid_items)} items → {out}", fg=typer.colors.GREEN)
+                    # пишем невалидные в *_inval.jsonl
+                    if invalid_items:
+                        inval_out = out[:-6] + "_inval.jsonl" if out.endswith(".jsonl") else out + "_inval.jsonl"
+                        write_jsonl(inval_out, invalid_items)
+                        typer.secho(f"[OK] wrote {len(invalid_items)} invalid items → {inval_out}", fg=typer.colors.MAGENTA)
                 except Exception as e:
                     typer.secho(f"[ERR] {key}: {e}", fg=typer.colors.RED)
 
@@ -783,7 +837,7 @@ def cmd_dryrun(
         raise typer.Exit(code=1)
     client = get_client(api_key)
     subj = {"subject": subject}
-    items = generate_for_subject(
+    valid_items, invalid_items = generate_for_subject(
         client,
         model,
         "en",
@@ -800,7 +854,11 @@ def cmd_dryrun(
         log_json=log_json,
         truncate=truncate,
     )
-    typer.echo(json.dumps(items, ensure_ascii=False, indent=2))
+    typer.secho("\n[VALID ITEMS]", fg=typer.colors.GREEN)
+    typer.echo(json.dumps(valid_items, ensure_ascii=False, indent=2))
+    if invalid_items:
+        typer.secho("\n[INVALID ITEMS]", fg=typer.colors.MAGENTA)
+        typer.echo(json.dumps(invalid_items, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
