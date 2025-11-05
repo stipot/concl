@@ -13,3 +13,4 @@ openpyxl
 scipy
 scikit-learn
 seaborn
+typer
