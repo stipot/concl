@@ -821,7 +821,7 @@ def cmd_dryrun(
     subfield: str = typer.Option("Mathematics", help="Subfield"),
     subject: str = typer.Option("Infinity", help="Subject"),
     num_questions: int = typer.Option(3, min=1, max=10),
-    model: str = typer.Option("gpt-4o"),
+    model: str = typer.Option("GPT-4o mini"),
     temperature: float = typer.Option(0.7),
     max_tokens: int = typer.Option(2000),
     seed: Optional[int] = typer.Option(None),

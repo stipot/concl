@@ -1,2 +1,3 @@
 .venv
 drafts/gpt2.onnx
+.secrets.toml

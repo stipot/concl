@@ -1,0 +1,151 @@
+{
+  "reports": [
+    {
+      "name": "gpt-4o_generated_questions_en.jsonl",
+      "total": 4250,
+      "invalid_total": 920,
+      "SPR": 1.0,
+      "CPR": 0.8414117647058823,
+      "LeakageRate": 0.0,
+      "AnswerUniqRate": 1.0,
+      "DefaultAlignRate": 1.0,
+      "ConcisionViolRate": 0.08466929831628132,
+      "OrthoPassRate": 0.9856470588235294,
+      "OrthoViolations": 68,
+      "ErrorHistogram": {
+        "v[2].a.too_long": 249,
+        "v[1].a.too_long": 305,
+        "v[0].a.too_long": 497
+      },
+      "GenQuality": 0.8906477905042626,
+      "InvalidTopIssues": [
+        [
+          "v.answers.dup",
+          443
+        ],
+        [
+          "v[1].leak",
+          224
+        ],
+        [
+          "v[2].leak",
+          205
+        ],
+        [
+          "v[0].leak",
+          170
+        ],
+        [
+          "n.not_aligned",
+          4
+        ],
+        [
+          "v[0].a.too_long",
+          3
+        ],
+        [
+          "v[3].leak",
+          2
+        ],
+        [
+          "v[1].a.too_long",
+          1
+        ]
+      ],
+      "dist_f": {
+        "Natural Sciences": 4250
+      },
+      "dist_s": {
+        "Mathematics": 1500,
+        "Computer and Information Sciences": 1500,
+        "Physical Sciences": 1250
+      },
+      "dist_j": {
+        "Infinity": 50,
+        "Prime Numbers": 50,
+        "Zero": 50,
+        "Complex Numbers": 50,
+        "Pythagorean Theorem": 50,
+        "Fractals": 50,
+        "Probability": 50,
+        "Graphs": 50,
+        "Calculus": 50,
+        "Topology": 50,
+        "Mathematical Proof": 50,
+        "Statistics": 50,
+        "Game Theory": 50,
+        "Set Theory": 50,
+        "Number Theory": 50,
+        "Linear Algebra": 50,
+        "Chaos Theory": 100,
+        "Algebra": 50,
+        "Geometry": 50,
+        "Functional Analysis": 50,
+        "Logic": 50,
+        "Differential Equations": 50,
+        "Combinatorics": 50,
+        "Cryptography": 50,
+        "Mathematical Modelling": 50,
+        "Mathematical Optimization": 50,
+        "Simulation": 50,
+        "Geometry of Space": 50,
+        "Mathematical Patterns": 50,
+        "Mathematical Paradoxes": 50,
+        "Artificial Intelligence Ethics": 50,
+        "Quantum Computing": 50,
+        "Data Privacy": 50,
+        "Blockchain Technology": 50,
+        "Internet of Things (IoT)": 50,
+        "Machine Learning in Healthcare": 50,
+        "Cybersecurity": 50,
+        "Virtual Reality": 50,
+        "Augmented Reality": 50,
+        "Big Data Analytics": 50,
+        "Cloud Computing": 50,
+        "Human-Computer Interaction": 50,
+        "Software Development Methodologies": 50,
+        "Digital Divide": 50,
+        "Open Source Software": 50,
+        "Autonomous Vehicles": 50,
+        "Social Media Algorithms": 50,
+        "Digital Currency": 50,
+        "Facial Recognition Technology": 50,
+        "Natural Language Processing": 50,
+        "Digital Twins": 50,
+        "Edge Computing": 50,
+        "5G Technology": 50,
+        "Quantum Cryptography": 50,
+        "Robotic Process Automation": 50,
+        "Digital Transformation in Businesses": 50,
+        "Predictive Analytics": 50,
+        "Smart Home Technology": 50,
+        "Biometric Authentication": 50,
+        "Digital Literacy": 50,
+        "Quantum Mechanics": 50,
+        "Thermodynamics": 50,
+        "Relativity": 50,
+        "String Theory": 50,
+        "Electromagnetism": 50,
+        "Particle Physics": 50,
+        "Astrophysics": 50,
+        "Nuclear Physics": 50,
+        "Geophysics": 50,
+        "Acoustics": 50,
+        "Fluid Dynamics": 50,
+        "Optics": 50,
+        "Solid State Physics": 50,
+        "Plasma Physics": 50,
+        "Biophysics": 50,
+        "Magnetism": 50,
+        "Thermal Physics": 50,
+        "Condensed Matter Physics": 50,
+        "Atmospheric Physics": 50,
+        "Hydrology": 50,
+        "Electronics": 50,
+        "Crystallography": 50,
+        "Photovoltaics": 50,
+        "Seismology": 50
+      }
+    }
+  ]
+}

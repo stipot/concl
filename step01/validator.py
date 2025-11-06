@@ -1,5 +1,6 @@
 # validate_dataset.py
 # Общий каркас валидации проектных записей датасета (контекстно-зависимые вопросы).
+# python step01/validator.py --input step01/data/gpt-4o_generated_questions_en.jsonl --out step01/data/validation_results.jsonl --summary step01/data/validation_summary.json --use-embeddings
 # Формат входных записей (JSONL построчно), минимально:
 # {
 #   "f": "<field>", "s": "<subfield>", "j": "<subject>",
@@ -45,6 +46,22 @@ except Exception:
 # =========================
 
 _WORD_RE = re.compile(r"\w+", flags=re.U | re.M)
+_MATH_HINT = re.compile(r"[<>=±≈∞∑∏∫∇√⋅·×÷⊕⊗∧∨¬⇒⇔∀∃\^\*/\+\-\(\)\[\]\{\}|]|O\([^)]+\)|\b[A-Za-z]\s*\(.*\)")
+
+
+def count_answer_tokens(a: str, hard_limit: int) -> int:
+    """
+    «Математически осознанный» подсчёт длины ответа.
+    - если обнаружены явные мат-символы/операторы/шаблоны, считаем за 1 токен;
+    - иначе — считаем по WORD_RE (как раньше).
+    """
+    s = (a or "").strip()
+    if not s:
+        return 0
+    if _MATH_HINT.search(s):
+        return 1
+    return len(tokenize_words(s))
+
 
 def read_api_key_from_secrets(path: str = ".secrets.toml") -> Optional[str]:
     if toml is None:
@@ -57,35 +74,42 @@ def read_api_key_from_secrets(path: str = ".secrets.toml") -> Optional[str]:
     except Exception:
         return None
 
+
 def normalize_text(s: str) -> str:
     s = s.strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
+
 def tokenize_words(s: str) -> List[str]:
     return [m.group(0).lower() for m in _WORD_RE.finditer(s)]
+
 
 def jdump(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=False)
 
+
 def cosine(u: List[float], v: List[float]) -> float:
     if not u or not v or len(u) != len(v):
         return 0.0
-    nu = math.sqrt(sum(x*x for x in u))
-    nv = math.sqrt(sum(x*x for x in v))
+    nu = math.sqrt(sum(x * x for x in u))
+    nv = math.sqrt(sum(x * x for x in v))
     if nu == 0 or nv == 0:
         return 0.0
-    dot = sum(x*y for x, y in zip(u, v))
+    dot = sum(x * y for x, y in zip(u, v))
     return dot / (nu * nv)
+
 
 # =========================
 # Модель данных
 # =========================
 
+
 @dataclasses.dataclass
 class Variation:
     c: str  # context
     a: str  # answer
+
 
 @dataclasses.dataclass
 class QAItem:
@@ -122,77 +146,21 @@ class QAItem:
             q=q,
             v=v_list,
             n=(str(raw.get("n")).strip() if raw.get("n") is not None else None),
-            meta={k: v for k, v in raw.items() if k not in {"f", "s", "j", "q", "v", "n"}}
+            meta={k: v for k, v in raw.items() if k not in {"f", "s", "j", "q", "v", "n"}},
         )
-
-def load_jsonl(path: str) -> List[Dict]:
-    """
-    Гибкая загрузка:
-    - JSONL: по строке -> dict/список -> добавляем объекты-словарики
-    - если ничего не прочли — пробуем считать весь файл как единый JSON
-      (массив объектов или один объект)
-    - пропускаем строки-строки, обрывки массивов, сводки и т.п.
-    """
-    data: List[Dict] = []
-    bad_lines = 0
-
-    def _extend_from_obj(obj):
-        nonlocal data
-        if isinstance(obj, dict):
-            # берем только «проектные» записи, где есть поле 'q' и 'v'
-            if "q" in obj and "v" in obj:
-                data.append(obj)
-        elif isinstance(obj, list):
-            for x in obj:
-                if isinstance(x, dict) and "q" in x and "v" in x:
-                    data.append(x)
-        # игнорируем прочие типы (str, int, и т.д.)
-
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if not s:
-                continue
-            # Нередко попадаются обрывки массивов или сводок; отсечем быстрыми эвристиками
-            if s in {"]", "],", "[", "[,", "}", "},"}:
-                bad_lines += 1
-                print(f"[WARN] Bad JSONL line skipped: {s[:120]}...", file=sys.stderr)
-                continue
-            try:
-                obj = json.loads(s)
-            except Exception:
-                bad_lines += 1
-                print(f"[WARN] Bad JSONL line skipped: {s[:120]}...", file=sys.stderr)
-                continue
-            _extend_from_obj(obj)
-
-    # Если после построчного парсинга ничего не прочли — пробуем целиком
-    if not data:
-        with open(path, "r", encoding="utf-8") as f:
-            whole = f.read().strip()
-        try:
-            obj = json.loads(whole)
-            _extend_from_obj(obj)
-        except Exception:
-            pass  # оставим пустым
-
-    if not data:
-        print("[WARN] No valid project records found in input file.", file=sys.stderr)
-    else:
-        print(f"[INFO] Loaded {len(data)} valid records"
-              + (f", skipped {bad_lines} noisy lines." if bad_lines else "."))
-
-    return data
 
 
 # =========================
 # Эмбеддинги (опционально)
 # =========================
 
+
 class EmbeddingProvider:
     """Абстракция эмбеддингов. Реализаций может быть несколько (OpenAI, локальные и т.д.)."""
+
     def embed(self, texts: List[str]) -> List[List[float]]:
         raise NotImplementedError
+
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: Optional[str], model: str = "text-embedding-3-small"):
@@ -204,6 +172,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             raise RuntimeError("Please install openai>=1.0 to use OpenAI embeddings.") from e
         # new client style
         from openai import OpenAI
+
         self._client = OpenAI(api_key=api_key)
         self._model = model
 
@@ -212,14 +181,18 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         resp = self._client.embeddings.create(model=self._model, input=texts)
         return [d.embedding for d in resp.data]
 
+
 class DummyEmbeddingProvider(EmbeddingProvider):
     """Заглушка: возвращает нули (ортогональность работать не будет, но валидатор можно отключить)."""
+
     def embed(self, texts: List[str]) -> List[List[float]]:
         return [[0.0] * 10 for _ in texts]
+
 
 # =========================
 # Результаты валидации
 # =========================
+
 
 @dataclasses.dataclass
 class ValidationIssue:
@@ -230,6 +203,7 @@ class ValidationIssue:
     suggest_fix: Optional[str] = None
     meta: Dict = dataclasses.field(default_factory=dict)
 
+
 @dataclasses.dataclass
 class ValidationResult:
     item: QAItem
@@ -238,9 +212,11 @@ class ValidationResult:
     metrics: Dict[str, float]  # любые количественные метрики
     recommendations: List[str]
 
+
 # =========================
 # Базовый валидатор и конкретные проверки
 # =========================
+
 
 class BaseValidator:
     name: str = "base"
@@ -248,8 +224,10 @@ class BaseValidator:
     def validate(self, item: QAItem) -> List[ValidationIssue]:
         raise NotImplementedError
 
+
 class StructureValidator(BaseValidator):
     """Структурная полнота: вопрос, >=2 контекстов, ответы не пустые, короткие ответы и т.п."""
+
     name = "structure"
 
     def __init__(self, min_contexts: int = 2, max_answer_tokens: int = 2):
@@ -262,58 +240,37 @@ class StructureValidator(BaseValidator):
             issues.append(ValidationIssue("q.missing", "Нет вопроса", "error"))
 
         if len(item.v) < self.min_contexts:
-            issues.append(ValidationIssue(
-                "contexts.too_few",
-                f"Мало контекстов: {len(item.v)} < {self.min_contexts}",
-                "error",
-                suggest_fix="Добавить недостающие контексты с альтернативными интерпретациями."
-            ))
+            issues.append(
+                ValidationIssue(
+                    "contexts.too_few",
+                    f"Мало контекстов: {len(item.v)} < {self.min_contexts}",
+                    "error",
+                    suggest_fix="Добавить недостающие контексты с альтернативными интерпретациями.",
+                )
+            )
 
         for i, var in enumerate(item.v):
             if not var.c:
-                issues.append(ValidationIssue(
-                    "context.empty",
-                    f"Пустой контекст v[{i}]",
-                    "error",
-                    suggest_fix="Сформулировать контекст так, чтобы он менял понимание вопроса."
-                ))
+                issues.append(ValidationIssue("context.empty", f"Пустой контекст v[{i}]", "error", suggest_fix="Сформулировать контекст так, чтобы он менял понимание вопроса."))
             if not var.a:
-                issues.append(ValidationIssue(
-                    "answer.empty",
-                    f"Пустой ответ v[{i}].a",
-                    "error",
-                    suggest_fix="Задать чёткий краткий ответ; не более 1–2 слов/чисел."
-                ))
+                issues.append(ValidationIssue("answer.empty", f"Пустой ответ v[{i}].a", "error", suggest_fix="Задать чёткий краткий ответ; не более 1–2 слов/чисел."))
             # краткость ответа
-            if var.a and len(tokenize_words(var.a)) > self.max_answer_tokens:
-                issues.append(ValidationIssue(
-                    "answer.too_long",
-                    f"Слишком длинный ответ v[{i}]: «{var.a}»",
-                    "warn",
-                    suggest_fix="Сократить до ≤ 2 слов/чисел."
-                ))
+            if var.a and count_answer_tokens(var.a, self.max_answer_tokens) > self.max_answer_tokens:
+                issues.append(ValidationIssue("answer.too_long", f"Слишком длинный ответ v[{i}]: «{var.a}»", "warn", suggest_fix="Сократить до ≤ 2 слов/чисел."))
 
         # базовый ответ без контекста — необязателен, но желателен
         if item.n is None:
-            issues.append(ValidationIssue(
-                "baseline.missing",
-                "Нет базового ответа (без контекста).",
-                "warn",
-                suggest_fix="Добавить поле n как якорный ответ без контекста."
-            ))
+            issues.append(ValidationIssue("baseline.missing", "Нет базового ответа (без контекста).", "warn", suggest_fix="Добавить поле n как якорный ответ без контекста."))
         else:
-            if len(tokenize_words(item.n)) > self.max_answer_tokens:
-                issues.append(ValidationIssue(
-                    "baseline.too_long",
-                    f"Слишком длинный базовый ответ: «{item.n}»",
-                    "warn",
-                    suggest_fix="Сократить до ≤ 2 слов/чисел."
-                ))
+            if count_answer_tokens(item.n, self.max_answer_tokens) > self.max_answer_tokens:
+                issues.append(ValidationIssue("baseline.too_long", f"Слишком длинный базовый ответ: «{item.n}»", "warn", suggest_fix="Сократить до ≤ 2 слов/чисел."))
 
         return issues
 
+
 class LeakValidator(BaseValidator):
     """Утечка ответа в контексте (контекст не должен явно содержать ответ)."""
+
     name = "leak"
 
     def __init__(self, case_insensitive: bool = True):
@@ -330,17 +287,21 @@ class LeakValidator(BaseValidator):
             needle = ans.lower() if self.case_insensitive else ans
             # простая эвристика: прямое вхождение ответа в контекст
             if needle and needle in hay:
-                issues.append(ValidationIssue(
-                    "leak.answer_in_context",
-                    f"Ответ v[{i}].a явно присутствует в контексте.",
-                    "warn",
-                    detail=f'answer="{var.a}", context="{var.c}"',
-                    suggest_fix="Переформулировать контекст так, чтобы он не подсказывал ответ буквально."
-                ))
+                issues.append(
+                    ValidationIssue(
+                        "leak.answer_in_context",
+                        f"Ответ v[{i}].a явно присутствует в контексте.",
+                        "warn",
+                        detail=f'answer="{var.a}", context="{var.c}"',
+                        suggest_fix="Переформулировать контекст так, чтобы он не подсказывал ответ буквально.",
+                    )
+                )
         return issues
+
 
 class UniquenessValidator(BaseValidator):
     """Ответ одного контекста не должен подходить к другому (грубая проверка эквивалентности)."""
+
     name = "uniqueness"
 
     def validate(self, item: QAItem) -> List[ValidationIssue]:
@@ -350,16 +311,20 @@ class UniquenessValidator(BaseValidator):
         dup_counts = collections.Counter(answers)
         collisions = [ans for ans, cnt in dup_counts.items() if cnt > 1 and ans]
         if collisions:
-            issues.append(ValidationIssue(
-                "answers.duplicate",
-                f"Одинаковые ответы для разных контекстов: {', '.join(collisions)}",
-                "warn",
-                suggest_fix="Переформулировать/расщепить контексты, чтобы ответы различались."
-            ))
+            issues.append(
+                ValidationIssue(
+                    "answers.duplicate",
+                    f"Одинаковые ответы для разных контекстов: {', '.join(collisions)}",
+                    "warn",
+                    suggest_fix="Переформулировать/расщепить контексты, чтобы ответы различались.",
+                )
+            )
         return issues
+
 
 class OrthogonalityValidator(BaseValidator):
     """Семантическая ортогональность контекстов по эмбеддингам (низкая косинусная близость)."""
+
     name = "orthogonality"
 
     def __init__(self, embedder: Optional[EmbeddingProvider], max_sim: float = 0.80):
@@ -377,23 +342,27 @@ class OrthogonalityValidator(BaseValidator):
         n = len(vecs)
         too_close_pairs = []
         for i in range(n):
-            for j in range(i+1, n):
+            for j in range(i + 1, n):
                 sim = cosine(vecs[i], vecs[j])
                 if sim >= self.max_sim:
                     too_close_pairs.append((i, j, sim))
         if too_close_pairs:
             pairs_str = ", ".join([f"({i},{j}): {sim:.2f}" for i, j, sim in too_close_pairs])
-            issues.append(ValidationIssue(
-                "contexts.too_similar",
-                "Контексты семантически слишком близки (низкая ортогональность).",
-                "warn",
-                detail=pairs_str,
-                suggest_fix="Объединить близкие контексты или развести их по смыслу/парадигме."
-            ))
+            issues.append(
+                ValidationIssue(
+                    "contexts.too_similar",
+                    "Контексты семантически слишком близки (низкая ортогональность).",
+                    "warn",
+                    detail=pairs_str,
+                    suggest_fix="Объединить близкие контексты или развести их по смыслу/парадигме.",
+                )
+            )
         return issues
+
 
 class BaselineAlignmentValidator(BaseValidator):
     """Базовый ответ должен быть близок хотя бы к одному контекстному ответу (простая проверка равенства/нормализации)."""
+
     name = "baseline"
 
     def validate(self, item: QAItem) -> List[ValidationIssue]:
@@ -405,16 +374,20 @@ class BaselineAlignmentValidator(BaseValidator):
         if not answers:
             return issues
         if nrm_n and nrm_n not in answers:
-            issues.append(ValidationIssue(
-                "baseline.not_aligned",
-                "Базовый ответ не согласован ни с одним контекстным ответом.",
-                "warn",
-                suggest_fix="Либо обновить базовый ответ, либо проверить формулировки контекстов/ответов."
-            ))
+            issues.append(
+                ValidationIssue(
+                    "baseline.not_aligned",
+                    "Базовый ответ не согласован ни с одним контекстным ответом.",
+                    "warn",
+                    suggest_fix="Либо обновить базовый ответ, либо проверить формулировки контекстов/ответов.",
+                )
+            )
         return issues
+
 
 class FiniteDiversityValidator(BaseValidator):
     """Грубая проверка «конечности разнообразия»: слишком много контекстов/ответы-«ловушки»."""
+
     name = "finite"
 
     def __init__(self, max_contexts: int = 8):
@@ -423,27 +396,26 @@ class FiniteDiversityValidator(BaseValidator):
     def validate(self, item: QAItem) -> List[ValidationIssue]:
         issues: List[ValidationIssue] = []
         if len(item.v) > self.max_contexts:
-            issues.append(ValidationIssue(
-                "contexts.too_many",
-                f"Слишком много контекстов: {len(item.v)} > {self.max_contexts}",
-                "warn",
-                suggest_fix="Свести множество к конечному набору ортогональных контекстов."
-            ))
+            issues.append(
+                ValidationIssue(
+                    "contexts.too_many",
+                    f"Слишком много контекстов: {len(item.v)} > {self.max_contexts}",
+                    "warn",
+                    suggest_fix="Свести множество к конечному набору ортогональных контекстов.",
+                )
+            )
         # эвристика: ответы вроде "depends", "varies", "unknown" ослабляют конечность
         vague = {"depends", "varies", "unknown", "unclear", "it depends"}
         for i, var in enumerate(item.v):
             if normalize_text(var.a).lower() in vague:
-                issues.append(ValidationIssue(
-                    "answer.vague",
-                    f"Ответ v[{i}] неконкретный («{var.a}»).",
-                    "warn",
-                    suggest_fix="Заменить на конкретный конечный вариант."
-                ))
+                issues.append(ValidationIssue("answer.vague", f"Ответ v[{i}] неконкретный («{var.a}»).", "warn", suggest_fix="Заменить на конкретный конечный вариант."))
         return issues
+
 
 # =========================
 # Оркестратор валидации
 # =========================
+
 
 class ValidatorPipeline:
     def __init__(self, validators: List[BaseValidator]):
@@ -455,12 +427,7 @@ class ValidatorPipeline:
             try:
                 issues.extend(v.validate(item))
             except Exception as e:
-                issues.append(ValidationIssue(
-                    code=f"{v.name}.error",
-                    title=f"Ошибка валидатора {v.name}",
-                    severity="error",
-                    detail=str(e)
-                ))
+                issues.append(ValidationIssue(code=f"{v.name}.error", title=f"Ошибка валидатора {v.name}", severity="error", detail=str(e)))
         # Правило итогового статуса: нет error => passed=True
         passed = not any(iss.severity == "error" for iss in issues)
 
@@ -477,9 +444,11 @@ class ValidatorPipeline:
 
         return ValidationResult(item=item, passed=passed, issues=issues, metrics=metrics, recommendations=recommendations)
 
+
 # =========================
 # IO
 # =========================
+
 
 def load_jsonl(path: str) -> List[Dict]:
     data = []
@@ -495,18 +464,24 @@ def load_jsonl(path: str) -> List[Dict]:
                 print(f"[WARN] Bad JSONL line skipped: {line[:120]}...", file=sys.stderr)
     return data
 
+
 def write_jsonl(path: str, items: Iterable[Dict]) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for it in items:
             f.write(jdump(it) + "\n")
 
+
 def write_summary(path: str, summary: Dict) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(jdump(summary))
+
 
 # =========================
 # Главная процедура
 # =========================
+
 
 def build_pipeline(use_embeddings: bool, max_sim: float, max_contexts: int, max_answer_tokens: int) -> ValidatorPipeline:
     embedder: Optional[EmbeddingProvider] = None
@@ -531,6 +506,7 @@ def build_pipeline(use_embeddings: bool, max_sim: float, max_contexts: int, max_
     ]
     return ValidatorPipeline(validators)
 
+
 def main():
     parser = argparse.ArgumentParser(description="Validation framework for context-dependent QA dataset.")
     parser.add_argument("--input", required=True, help="Путь к входному JSONL (проектные записи).")
@@ -539,7 +515,7 @@ def main():
     parser.add_argument("--use-embeddings", action="store_true", help="Включить семантическую проверку ортогональности (OpenAI embeddings).")
     parser.add_argument("--max-sim", type=float, default=0.80, help="Порог косинусной близости контекстов (>= считается слишком похожим).")
     parser.add_argument("--max-contexts", type=int, default=8, help="Максимум контекстов для эвристики конечности.")
-    parser.add_argument("--max-answer-tokens", type=int, default=2, help="Лимит слов/чисел в ответах и базовом ответе.")
+    parser.add_argument("--max-answer-tokens", type=int, default=10, help="Лимит слов/чисел в ответах и базовом ответе.")
     args = parser.parse_args()
 
     raw_items = load_jsonl(args.input)
@@ -549,11 +525,9 @@ def main():
             items.append(QAItem.from_raw(r))
         except Exception as e:
             print(f"[WARN] Skip item #{idx}: {e}", file=sys.stderr)
-
     if not items:
         print("[ERROR] No parsable QA items. Check input file.", file=sys.stderr)
         sys.exit(1)
-    items: List[QAItem] = [QAItem.from_raw(r) for r in raw_items]
 
     pipeline = build_pipeline(
         use_embeddings=args.use_embeddings,
@@ -570,19 +544,21 @@ def main():
     # Сохраняем построчно детальные результаты
     out_rows: List[Dict] = []
     for r in results:
-        out_rows.append({
-            "f": r.item.f,
-            "s": r.item.s,
-            "j": r.item.j,
-            "q": r.item.q,
-            "n": r.item.n,
-            "v": [{"c": vv.c, "a": vv.a} for vv in r.item.v],
-            "passed": r.passed,
-            "issues": [dataclasses.asdict(iss) for iss in r.issues],
-            "metrics": r.metrics,
-            "recommendations": r.recommendations,
-            "ts": dt.datetime.now().isoformat()
-        })
+        out_rows.append(
+            {
+                "f": r.item.f,
+                "s": r.item.s,
+                "j": r.item.j,
+                "q": r.item.q,
+                "n": r.item.n,
+                "v": [{"c": vv.c, "a": vv.a} for vv in r.item.v],
+                "passed": r.passed,
+                "issues": [dataclasses.asdict(iss) for iss in r.issues],
+                "metrics": r.metrics,
+                "recommendations": r.recommendations,
+                "ts": dt.datetime.now().isoformat(),
+            }
+        )
     write_jsonl(args.out, out_rows)
 
     # Сводка
@@ -590,7 +566,7 @@ def main():
     passed = sum(1 for r in results if r.passed)
     errors = sum(1 for r in results if any(i.severity == "error" for i in r.issues))
     warns = sum(1 for r in results if any(i.severity == "warn" for i in r.issues))
-    avg_contexts = statistics.mean((len(r.item.v) for r in results), default=0.0)
+    avg_contexts = statistics.mean((len(r.item.v) for r in results))
 
     # Частоты типов проблем
     issue_counter = collections.Counter()
@@ -613,11 +589,12 @@ def main():
             "max_contexts": args.max_contexts,
             "max_answer_tokens": args.max_answer_tokens,
         },
-        "generated_at": dt.datetime.now().isoformat()
+        "generated_at": dt.datetime.now().isoformat(),
     }
     write_summary(args.summary, summary)
 
     print(f"[OK] Validated {total} items. Pass rate: {summary['pass_rate']:.2%}. Results -> {args.out}; Summary -> {args.summary}")
+
 
 if __name__ == "__main__":
     main()

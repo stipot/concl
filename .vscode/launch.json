@@ -41,11 +41,15 @@
       "justMyCode": true
     },
     {
-      "name": "2022. 1.1. Расчет по модели Index XL",
+      "name": "Этап 2.2. Исправление вопросов. вер2.",
       "type": "debugpy",
       "request": "launch",
-      "program": "calculate.py",
-      "args": ["--env=REV2022OLD"],
+      "program": "./step01/rehab_inval.py",
+      "args": [
+        "step01/data/gpt-4o_generated_questions_en_inval.jsonl",
+        "step01/data/gpt-4o_generated_questions_en_inval_fixed.jsonl",
+        "gpt-4o-mini"
+      ],
       "console": "integratedTerminal",
       "justMyCode": true
     }
