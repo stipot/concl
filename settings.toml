@@ -1,0 +1,47 @@
+# окружения поддерживаются секциями: [default], [dev], [prod]
+[default]
+
+[llm]
+provider = "openai" # "openai" | "openai-compat" (для GigaChat и др.)
+
+[llm.openai]
+base_url = "https://api.openai.com/v1"
+default_headers = {"X-Request-Source" = "adaos"}
+default_query = {}
+max_retries = 5
+timeout = 30.0
+
+# для openai-compat (например, GigaChat Pro)
+[llm.compat]
+base_url = "https://gigachat.devices.sberbank.ru/api/v1"
+default_headers = {}
+default_query = {}
+max_retries = 4
+timeout = 30.0
+
+# моделям — свои псевдонимы (удобно менять централизованно)
+[llm.models]
+eval_fast = "gpt-4o-mini"
+gen = "gpt-5-nano-2025-08-07"
+gigachat_pro = "GigaChat-Pro"
+
+[paths]
+data_dir = "./step01/data"
+
+[exp.exp1]
+# параметры эксперимента (могут переопределять CLI)
+lang = "en"
+log_json = true
+log_prompt = true
+log_response = false
+max_retries = 3
+max_subfields = 2
+max_tokens = 7000
+num_questions = 50
+resume = true
+seed = 42
+temperature = 1.0
+truncate = 2000
+
+# опционально — имя выходного файла (шаблон можно не задавать)
+out = "" # пусто = сгенерировать автоматически

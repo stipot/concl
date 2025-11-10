@@ -15,3 +15,5 @@ scikit-learn
 seaborn
 typer
 plotly
+dynaconf
+nltk
