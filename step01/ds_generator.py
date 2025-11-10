@@ -1,4 +1,4 @@
-# qgen_cli.py
+# step01\ds_generator.py
 # Генерация контекстно-зависимых вопросов с Typer-CLI.
 # Требуется: pip install typer[all] toml openai
 from __future__ import annotations
@@ -25,6 +25,14 @@ SUPPORTED_MODELS = [
     "gpt-4",
     "gpt-3.5-turbo",
 ]
+
+REASONING_HINTS = ("gpt-5", "o3", "o4")
+
+
+def is_reasoning_model(name: str) -> bool:
+    n = (name or "").lower()
+    return any(h in n for h in REASONING_HINTS)
+
 
 # --------- Утилиты ---------
 WORD_RE = re.compile(r"\w+", flags=re.U | re.M)
@@ -471,35 +479,34 @@ def call_openai(
     expected_batch: Optional[int] = None,  # <— НОВОЕ
 ) -> Tuple[str, Dict[str, Any]]:
 
-    # сообщения — явно типизируем
-    msgs: List[Dict[str, str]] = [
-        {"role": "system", "content": "You are an AI language model that generates questions."},
-        {"role": "user", "content": prompt},
-    ]
-
-    # --- ВАЖНО: params как dict[str, Any], иначе типизатор «зажмёт» тип значений
-    params: Dict[str, Any] = {"model": model, "messages": msgs}
-    # просим сразу JSON-объект (уменьшает накладные расходы против json_schema)
-    params["response_format"] = {"type": "json_schema", "json_schema": qa_batch_schema(expected_batch)}
-
-    # температура: не отправляем 1.0, т.к. часть моделей поддерживает только дефолт
-    if temperature is not None and float(temperature) != 1.0:
-        params["temperature"] = float(temperature)
-
-    # первая попытка — modern: max_completion_tokens
-    params["max_completion_tokens"] = int(max_tokens)
-    if seed is not None:
-        params["seed"] = int(seed)
-
     def _try(p: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
         try:
-            resp, status, headers, raw_text = _create_with_raw_response(client, **p)
+            if use_responses:
+                raw_api = getattr(client.responses, "with_raw_response", None)
+                if raw_api and hasattr(raw_api, "create"):
+                    raw = raw_api.create(**p)
+                    status = getattr(raw, "status_code", None)
+                    headers = dict(getattr(raw, "headers", {}) or {})
+                    try:
+                        raw_text = raw.text
+                    except Exception:
+                        raw_text = None
+                    resp = raw.parse()
+                else:
+                    resp = client.responses.create(**p)
+                    status, headers, raw_text = None, None, None
+            else:
+                resp, status, headers, raw_text = _create_with_raw_response(client, **p)
         except TypeError as te:
             # на всякий случай убираем response_format и пробуем снова
             if "response_format" in p:
                 p = dict(p)
                 p.pop("response_format", None)
-                resp, status, headers, raw_text = _create_with_raw_response(client, **p)
+                if use_responses:
+                    resp = client.responses.create(**p)
+                    status, headers, raw_text = None, None, None
+                else:
+                    resp, status, headers, raw_text = _create_with_raw_response(client, **p)
             else:
                 raise
 
@@ -513,11 +520,41 @@ def call_openai(
                 # тело может быть большим — но это ровно то, что ты просил
                 print_block("[RAW HTTP BODY]", raw_text, max_len=8000, color=typer.colors.BRIGHT_BLACK)
 
-        _dump_choice_debug(resp)
-        choice = resp.choices[0]
-        content = choice.message.content or ""
-        finish = getattr(choice, "finish_reason", None)
-        usage = getattr(resp, "usage", None)
+        if use_responses:
+            # Responses API: достаём текст независимо от формы
+            content = getattr(resp, "output_text", "") or ""
+            if not content:
+                try:
+                    for out in getattr(resp, "output", None) or []:
+                        for part in getattr(out, "content", None) or []:
+                            if getattr(part, "type", None) == "output_text":
+                                content += part.text or ""
+                except Exception:
+                    content = content or ""
+            # метаданные (без choices)
+            finish = getattr(resp, "finish_reason", None)
+            usage = getattr(resp, "usage", None)
+            # собственный лог вместо _dump_choice_debug
+            meta_lines = [
+                f"id={getattr(resp, 'id', None)}",
+                f"model={model}",
+                f"finish_reason={finish}",
+            ]
+            try:
+                if usage:
+                    pt = getattr(usage, "prompt_tokens", None)
+                    ot = getattr(usage, "output_tokens", None) or getattr(usage, "completion_tokens", None)
+                    tt = getattr(usage, "total_tokens", None)
+                    meta_lines += [f"usage.prompt_tokens={pt}", f"usage.output_tokens={ot}", f"usage.total_tokens={tt}"]
+            except Exception:
+                pass
+            print_block("[GPT META]", "\n".join(meta_lines), max_len=5000, color=typer.colors.YELLOW)
+        else:
+            _dump_choice_debug(resp)
+            choice = resp.choices[0]
+            content = choice.message.content or ""
+            finish = getattr(choice, "finish_reason", None)
+            usage = getattr(resp, "usage", None)
         meta: Dict[str, Any] = {
             "id": getattr(resp, "id", None),
             "model": getattr(resp, "model", None),
@@ -527,62 +564,96 @@ def call_openai(
             "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
         }
         # Явная диагностика пустого контента
-        if not content.strip():
+        if not (content or "").strip():
             # Печатаем короткий маркер, чтобы в логах было видно сразу
             print_block("[GPT RESPONSE EMPTY]", f"finish_reason={finish}", max_len=200, color=typer.colors.RED)
             raise ValueError(f"Empty content (finish_reason={finish})")
         if log_response:
-            meta_str = f"(model={resp.model}, finish_reason={resp.choices[0].finish_reason})"
+            # универсально для Chat Completions и Responses API
+            meta_str = f"(model={getattr(resp, 'model', model)}, finish_reason={finish})"
             print_block(f"[GPT RESPONSE {meta_str}]", content, max_len=truncate, color=typer.colors.GREEN)
         return content, meta
+
+    msgs: List[Dict[str, str]] = [
+        {"role": "system", "content": "You produce STRICT JSON only. No prose."},
+        {"role": "user", "content": prompt},
+    ]
+
+    # --- ДВА пути: Responses API (reasoning) и Chat Completions (обычные) ---
+    use_responses = is_reasoning_model(model)
+
+    if use_responses:
+        # Responses API: есть max_output_tokens и reasoning.effort
+        params: Dict[str, Any] = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": msgs[0]["content"]},
+                {"role": "user", "content": msgs[1]["content"]},
+            ],
+            "response_format": {"type": "json_schema", "json_schema": qa_batch_schema(expected_batch)},
+            "max_output_tokens": int(max_tokens),
+            "reasoning": {"effort": "low"},
+        }
+    else:
+        # Chat Completions: нет reasoning, используем max_completion_tokens
+        params: Dict[str, Any] = {
+            "model": model,
+            "messages": msgs,
+            "response_format": {"type": "json_schema", "json_schema": qa_batch_schema(expected_batch)},
+            "max_completion_tokens": int(max_tokens),
+        }
+        if temperature is not None and float(temperature) != 1.0:
+            params["temperature"] = float(temperature)
+        if seed is not None:
+            params["seed"] = int(seed)
+
+    # ПЕРВАЯ попытка — строгий json_schema (если получится — супер)
+    params["response_format"] = {"type": "json_schema", "json_schema": qa_batch_schema(expected_batch)}
+
+    def _try_with(p: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        return _try(p)  # как у тебя
 
     # лог промпта
     if log_prompt:
         print_block("[PROMPT → GPT]", prompt, max_len=truncate, color=typer.colors.CYAN)
 
     try:
-        return _try(params)
+        return _try_with(dict(params))
     except Exception as e1:
-        # Если SDK пробросил HTTP-ошибку — попробуем вывести тело
-        resp_obj = getattr(e1, "response", None)
-        if resp_obj is not None:
+        msg = str(e1)
+        # Переход на более совместимый формат, если пусто/обрезалось или формат не «зашёл»
+        if ("Empty content" in msg) or ("finish_reason=length" in msg) or ("unsupported" in msg) or ("parsed=0" in msg):
+            # 2) json_object (часто проходит у nano/mini)
+            p2 = dict(params)
+            p2["response_format"] = {"type": "json_object"}
+            # Для reasoning увеличим бюджет вывода на ~50% (в пределах разумного)
+            if is_reasoning_model(model):
+                p2["max_output_tokens"] = min(4096, int(max_tokens * 1.5))
             try:
-                status = getattr(resp_obj, "status_code", None)
-                text = getattr(resp_obj, "text", None)
-                if text:
-                    print_block("[RAW HTTP ERROR BODY]", f"status={status}\n{text}", max_len=8000, color=typer.colors.RED)
-            except Exception:
-                pass
-        msg = f"{getattr(e1, 'message', '')} {e1}"
-
-        # температура не поддерживается — убрать
-        if "unsupported_value" in msg and "temperature" in msg:
-            params.pop("temperature", None)
-            try:
-                return _try(params)
-            except Exception as e1c:
-                msg = f"{getattr(e1c, 'message', '')} {e1c}"
-
-        # seed не поддерживается — убрать
-        if "seed" in params:
-            params.pop("seed", None)
-            try:
-                return _try(params)
-            except Exception as e1b:
-                msg = f"{getattr(e1b, 'message', '')} {e1b}"
-
-        # переключение на legacy max_tokens
-        if "unsupported_parameter" in msg or "max_completion_tokens" in msg:
-            params.pop("max_completion_tokens", None)
-            params["max_tokens"] = int(max_tokens)
-            try:
-                return _try(params)
+                return _try_with(p2)
             except Exception as e2:
-                msg2 = f"{getattr(e2, 'message', '')} {e2}"
-                # повторно убираем temperature/seed на всякий
-                params.pop("temperature", None)
-                params.pop("seed", None)
-                return _try(params)
+                msg2 = str(e2)
+                # 3) Без response_format вообще, но с жёсткой инструкцией в промпте о JSON
+                p3 = dict(params)
+                p3.pop("response_format", None)
+                # добавим мягкий лимит длины (не влияет на бюджет, но помогает модели «собраться»)
+                guidance = 'Answer MUST be a single JSON object with key "items" only, ≤1200 tokens.'
+                if is_reasoning_model(model):
+                    # Responses API ожидает "input", не "messages"
+                    p3.pop("messages", None)
+                    # пересоберём input с дополнительной system-инструкцией
+                    p3["input"] = [
+                        {"role": "system", "content": msgs[0]["content"]},
+                        {"role": "user", "content": msgs[1]["content"]},
+                        {"role": "system", "content": guidance},
+                    ]
+                    p3["max_output_tokens"] = min(4096, int(max_tokens * 1.5))
+                else:
+                    # Chat Completions — используем messages
+                    msgs2 = list(msgs)
+                    msgs2.append({"role": "system", "content": guidance})
+                    p3["messages"] = msgs2
+                return _try_with(p3)
         raise
 
 
@@ -620,6 +691,7 @@ def generate_for_subject(
     results_invalid: List[Dict] = []
     last_err = None
     attempt = 0
+    no_progress_batches = 0
     while remaining > 0 and attempt <= max_retries:
         try:
             # планируем безопасный размер батча
@@ -652,17 +724,28 @@ def generate_for_subject(
 
             valid, invalid = partition_and_annotate(items, field, subfield, subj_name, lang)
             # Логируем кратко статистику батча
-            if invalid:
-                typer.secho(f"[BATCH] valid={len(valid)} invalid={len(invalid)}", fg=typer.colors.YELLOW)
-            else:
-                typer.secho(f"[BATCH] valid={len(valid)}", fg=typer.colors.GREEN)
+            total_batch = len(valid) + len(invalid)
+            typer.secho(
+                f"[BATCH] produced={total_batch} (valid={len(valid)}, invalid={len(invalid)}); remaining={remaining}",
+                fg=typer.colors.GREEN if len(invalid) == 0 else typer.colors.YELLOW,
+            )
 
             if not valid and not invalid:
                 raise ValueError("Empty generation result after partition.")
 
             results_valid.extend(valid)
             results_invalid.extend(invalid)
-            remaining -= len(valid)  # считаем план по валидным
+
+            produced = len(valid) + len(invalid)
+            if produced == 0:
+                # теоретически уже обработано выше, но оставим защиту
+                no_progress_batches += 1
+                if no_progress_batches >= 3:
+                    raise RuntimeError("Stuck: no progress for 3 batches.")
+            else:
+                remaining = max(0, remaining - produced)  # считаем по факту выпусков (valid+invalid)
+                no_progress_batches = 0
+
             attempt = 0  # успешный батч сбрасывает счётчик ошибок
             continue
         except Exception as e:
@@ -672,11 +755,13 @@ def generate_for_subject(
             msg = str(e)
             # эвристика: либо finish_reason=length, либо completion_tokens≈max_tokens
             if ("finish_reason=length" in msg) or ("Empty content" in msg) or ("parsed=0" in msg):
-                # ужимаем оценку per-item, чтобы следующий plan_batch_size дал меньший батч
-                # (простой способ — снизить max_tokens локально, если можно)
-                if max_tokens > 1024:
-                    max_tokens = max(1024, int(max_tokens * 0.9))
-                    typer.secho(f"[ADAPT] Shrink max_tokens to {max_tokens}", fg=typer.colors.MAGENTA)
+                if is_reasoning_model(model):
+                    max_tokens = min(4096, int(max_tokens * 1.5))
+                    typer.secho(f"[ADAPT] Raise output budget to {max_tokens}", fg=typer.colors.MAGENTA)
+                else:
+                    if max_tokens > 1024:
+                        max_tokens = max(1024, int(max_tokens * 0.9))
+                        typer.secho(f"[ADAPT] Shrink max_tokens to {max_tokens}", fg=typer.colors.MAGENTA)
 
             if attempt < max_retries:
                 backoff_sleep(attempt + 1)
@@ -692,9 +777,9 @@ def generate_for_subject(
 def cmd_gen(
     field_data_file: str = typer.Option("field_data.json", help="Имя файла с FoK-данными (в каталоге DATA_DIR)."),
     out: str = typer.Option(None, help="Путь вывода JSONL. По умолчанию DATA_DIR/{model}_generated_questions_{lang}.jsonl"),
-    model: str = typer.Option("gpt-4o", help=f"Имя модели. Поддерживаемые: {', '.join(SUPPORTED_MODELS)}"),
+    model: str = typer.Option("gpt-5-nano-2025-08-07", help=f"Имя модели. Поддерживаемые: {', '.join(SUPPORTED_MODELS)}"),
     lang: str = typer.Option("en", help="Код языка для пометки данных в имени файла."),
-    num_questions: int = typer.Option(50, min=1, max=50, help="Сколько вопросов на один subject."),
+    num_questions: int = typer.Option(10, min=1, max=50, help="Сколько вопросов на один subject."),
     temperature: float = typer.Option(1.0, min=0.0, max=2.0, help="Температура генерации. Некоторые модели поддерживают только значение 1; в таком случае параметр будет опущен."),
     max_tokens: int = typer.Option(7000, min=512, max=8192),
     seed: Optional[int] = typer.Option(None, help="Фиксировать seed (если поддерживается)."),
@@ -724,7 +809,9 @@ def cmd_gen(
     processed = load_processed_subjects(out) if resume else set()
 
     client = get_client(api_key)
-
+    """ models = client.models.list()
+    for model_name in models:
+        print(model_name.id) """
     # обход FoK → sfok → subjects
     total = 0
     skipped = 0
