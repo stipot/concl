@@ -1,3 +1,4 @@
 .venv
 drafts/gpt2.onnx
 .secrets.toml
+step01/__pycache__/
