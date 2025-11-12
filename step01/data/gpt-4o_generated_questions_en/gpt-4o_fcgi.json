@@ -1,0 +1,197 @@
+{
+  "meta": {
+    "valid_path": "D:\\git\\MUIV\\concl\\step01\\data\\gpt-4o_generated_questions_en\\gpt-4o_validation_results.jsonl",
+    "inval_path": "D:\\git\\MUIV\\concl\\step01\\data\\gpt-4o_generated_questions_en\\gpt-4o_validation_results_inval.jsonl",
+    "tau_tokens": 7,
+    "alpha": 0.75,
+    "target_k": 3.0,
+    "weights": {
+      "S": 2.0,
+      "A": 1.0,
+      "U": 1.5,
+      "L": 2.0,
+      "O": 3.0,
+      "F": 1.0,
+      "C": 0.5,
+      "D": 0.75
+    }
+  },
+  "totals": {
+    "valid_items": 6000,
+    "inval_items": 1303,
+    "invalid_rate": 0.17841982746816376
+  },
+  "counts_valid": {
+    "structure_errors": 0,
+    "codes": {
+      "answer.vague": 42,
+      "contexts.too_similar": 76
+    },
+    "answers_leq_tau_all": 5992,
+    "contexts_total_sum": 17648
+  },
+  "components_valid": {
+    "S": 1.0,
+    "A": 1.0,
+    "U": 1.0,
+    "L": 1.0,
+    "O": 0.9873333333333333,
+    "F": 0.993,
+    "C": 0.9986666666666667,
+    "D": 0.9965582222222222
+  },
+  "parts_valid": {
+    "fcgi_valid": 0.99587913284,
+    "avg_k": 2.941333333333,
+    "S": 1.0,
+    "A": 1.0,
+    "U": 1.0,
+    "L": 1.0,
+    "O": 0.987333333333,
+    "F": 0.993,
+    "C": 0.998666666667,
+    "D": 0.996558222222
+  },
+  "fcgi": {
+    "fcgi_valid": 0.99587913284,
+    "fcgi_global": 0.862615695544
+  },
+  "by_subfield": {
+    "Mathematics": {
+      "counts": {
+        "total": 1500,
+        "structure_errors": 0,
+        "codes": {
+          "answer.vague": 28,
+          "contexts.too_similar": 31
+        },
+        "answers_leq_tau_all": 1498,
+        "contexts_total_sum": 4358
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9793333333333334,
+        "F": 0.9813333333333333,
+        "C": 0.9986666666666667,
+        "D": 0.9910382222222223
+      },
+      "parts": {
+        "fcgi_valid": 0.9924616240485077,
+        "avg_k": 2.9053333333333335,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9793333333333334,
+        "F": 0.9813333333333333,
+        "C": 0.9986666666666667,
+        "D": 0.9910382222222223
+      }
+    },
+    "Computer and Information Sciences": {
+      "counts": {
+        "total": 1500,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 3,
+          "answer.vague": 3
+        },
+        "answers_leq_tau_all": 1499,
+        "contexts_total_sum": 4420
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.998,
+        "F": 0.998,
+        "C": 0.9993333333333333,
+        "D": 0.9971555555555556
+      },
+      "parts": {
+        "fcgi_valid": 0.9991086674007862,
+        "avg_k": 2.9466666666666668,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.998,
+        "F": 0.998,
+        "C": 0.9993333333333333,
+        "D": 0.9971555555555556
+      }
+    },
+    "Physical Sciences": {
+      "counts": {
+        "total": 1500,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 20,
+          "answer.vague": 6
+        },
+        "answers_leq_tau_all": 1498,
+        "contexts_total_sum": 4379
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9866666666666667,
+        "F": 0.996,
+        "C": 0.9986666666666667,
+        "D": 0.9934928888888889
+      },
+      "parts": {
+        "fcgi_valid": 0.9957672409397746,
+        "avg_k": 2.9193333333333333,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9866666666666667,
+        "F": 0.996,
+        "C": 0.9986666666666667,
+        "D": 0.9934928888888889
+      }
+    },
+    "Chemical Sciences": {
+      "counts": {
+        "total": 1500,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 22,
+          "answer.vague": 5
+        },
+        "answers_leq_tau_all": 1497,
+        "contexts_total_sum": 4491
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9853333333333333,
+        "F": 0.9966666666666667,
+        "C": 0.998,
+        "D": 0.999964
+      },
+      "parts": {
+        "fcgi_valid": 0.9958645101204013,
+        "avg_k": 2.994,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9853333333333333,
+        "F": 0.9966666666666667,
+        "C": 0.998,
+        "D": 0.999964
+      }
+    }
+  }
+}

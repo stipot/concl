@@ -1,0 +1,192 @@
+{
+  "meta": {
+    "valid_path": "D:\\git\\MUIV\\concl\\step01\\data\\gpt-5-nano-2025-08-07_generated_questions_en\\gpt-5-nano-2025-08-07_exp1_validation_results.jsonl",
+    "inval_path": "D:\\git\\MUIV\\concl\\step01\\data\\gpt-5-nano-2025-08-07_generated_questions_en\\gpt-5-nano-2025-08-07_exp1_validation_results_inval.jsonl",
+    "tau_tokens": 7,
+    "alpha": 0.75,
+    "target_k": 3.0,
+    "weights": {
+      "S": 2.0,
+      "A": 1.0,
+      "U": 1.5,
+      "L": 2.0,
+      "O": 3.0,
+      "F": 1.0,
+      "C": 0.5,
+      "D": 0.75
+    }
+  },
+  "totals": {
+    "valid_items": 3781,
+    "inval_items": 1798,
+    "invalid_rate": 0.32227997849076895
+  },
+  "counts_valid": {
+    "structure_errors": 0,
+    "codes": {
+      "contexts.too_similar": 260
+    },
+    "answers_leq_tau_all": 3781,
+    "contexts_total_sum": 10872
+  },
+  "components_valid": {
+    "S": 1.0,
+    "A": 1.0,
+    "U": 1.0,
+    "L": 1.0,
+    "O": 0.9312351229833378,
+    "F": 1.0,
+    "C": 1.0,
+    "D": 0.9844822604090764
+  },
+  "parts_valid": {
+    "fcgi_valid": 0.980994834024,
+    "avg_k": 2.875429780481,
+    "S": 1.0,
+    "A": 1.0,
+    "U": 1.0,
+    "L": 1.0,
+    "O": 0.931235122983,
+    "F": 1.0,
+    "C": 1.0,
+    "D": 0.984482260409
+  },
+  "fcgi": {
+    "fcgi_valid": 0.980994834024,
+    "fcgi_global": 0.743878588517
+  },
+  "by_subfield": {
+    "Mathematics": {
+      "counts": {
+        "total": 1006,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 69
+        },
+        "answers_leq_tau_all": 1006,
+        "contexts_total_sum": 2936
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9314115308151093,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.993355967574276
+      },
+      "parts": {
+        "fcgi_valid": 0.9816043377349652,
+        "avg_k": 2.918489065606362,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9314115308151093,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.993355967574276
+      }
+    },
+    "Computer and Information Sciences": {
+      "counts": {
+        "total": 1143,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 87
+        },
+        "answers_leq_tau_all": 1143,
+        "contexts_total_sum": 3352
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9238845144356955,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9954617440099078
+      },
+      "parts": {
+        "fcgi_valid": 0.9797052748009105,
+        "avg_k": 2.9326334208223974,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9238845144356955,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9954617440099078
+      }
+    },
+    "Physical Sciences": {
+      "counts": {
+        "total": 848,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 51
+        },
+        "answers_leq_tau_all": 848,
+        "contexts_total_sum": 2453
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9398584905660378,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9884842804378782
+      },
+      "parts": {
+        "fcgi_valid": 0.9835608958810801,
+        "avg_k": 2.892688679245283,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9398584905660378,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9884842804378782
+      }
+    },
+    "Chemical Sciences": {
+      "counts": {
+        "total": 784,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 53
+        },
+        "answers_leq_tau_all": 784,
+        "contexts_total_sum": 2131
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9323979591836735,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9205392935235319
+      },
+      "parts": {
+        "fcgi_valid": 0.9771100114612359,
+        "avg_k": 2.7181122448979593,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9323979591836735,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9205392935235319
+      }
+    }
+  }
+}
