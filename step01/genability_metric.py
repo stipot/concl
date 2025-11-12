@@ -2,23 +2,157 @@
 from __future__ import annotations
 import re, json, math, statistics
 from dataclasses import dataclass
-from typing import List, Dict, Any, Tuple, Optional, Callable
+from typing import List, Dict, Any, Tuple, Optional, Callable, Sequence
+import sqlite3, hashlib, os, threading
 import numpy as np
 import pandas as pd
+import tiktoken
+from transformers import AutoTokenizer
 
 # ------- утилиты токенизации / нормализации -------
 try:
-    # nltk нужен только для BLEU; если его нет, metric gracefully degrades
-    import nltk
     from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
     _SMOOTH = SmoothingFunction().method1
     _HAS_NLTK = True
+
+    def _sent_bleu(refs: list[list[Any]], hyp: list[Any]) -> float:
+        # нормализуем типы к List[List[str]] и List[str]
+        refs_s = [_to_str_tokens(r) for r in (refs or []) if r]
+        hyp_s = _to_str_tokens(hyp or [])
+        if not refs_s or not hyp_s:
+            return 0.0
+        b = sentence_bleu(refs_s, hyp_s, smoothing_function=_SMOOTH)
+        # NLTK возвращает float; на всякий случай форсируем
+        return float(b) if isinstance(b, (int, float)) else 0.0
+
 except Exception:
     _HAS_NLTK = False
     _SMOOTH = None
 
+    def _sent_bleu(refs: list[list[Any]], hyp: list[Any]) -> float:
+        # graceful fallback без NLTK
+        return 0.0
+
+
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _to_str_tokens(seq: Sequence[Any]) -> list[str]:
+    # приводим любой список токенов (int|str|др.) к List[str]
+    out: list[str] = []
+    for t in seq or []:
+        out.append(str(t))
+    return out
+
+
+class Tokenizer:
+    """Абстрактный токенизатор: возвращает список 'инкенов' (строковых) для универсальности distinct/self-BLEU."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def tokenize(self, text: str) -> list[str]:
+        raise NotImplementedError
+
+
+class RegexWordTokenizer(Tokenizer):
+    def __init__(self):
+        super().__init__("regex.word")
+
+    def tokenize(self, text: str) -> list[str]:
+        return _WORD_RE.findall((text or "").lower())
+
+
+class TiktokenTokenizer(Tokenizer):
+    def __init__(self, enc_name: str = "cl100k_base"):
+        self.enc = tiktoken.get_encoding(enc_name)
+        super().__init__(f"tiktoken.{enc_name}")
+
+    def tokenize(self, text: str) -> list[str]:
+        # Превратим числа токенов в строки, чтобы distinct-n был совместим
+        ids = self.enc.encode(text or "")
+        return [f"▁{i}" for i in ids]
+
+
+class HFTokenizer(Tokenizer):
+    def __init__(self, pretrained: str):
+        self.tok = AutoTokenizer.from_pretrained(pretrained, use_fast=True)
+        super().__init__(f"hf.{pretrained}")
+
+    def tokenize(self, text: str) -> list[str]:
+        ids = self.tok.encode(text or "", add_special_tokens=False)
+        return [f"▁{i}" for i in ids]
+
+
+# --------- диск-кеш для токенов (sqlite) ----------
+class TokenCache:
+    """
+    Кеширует токены по (tokenizer_name, text_hash).
+    Формат значения: '\x1f'.join(tokens) — компактно и просто.
+    """
+
+    _ddl = "CREATE TABLE IF NOT EXISTS tok_cache (k TEXT PRIMARY KEY, v TEXT NOT NULL);"
+
+    def __init__(self, path: str = ".genability_tokcache.sqlite"):
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self._lock = threading.Lock()
+        with sqlite3.connect(self.path) as db:
+            db.execute(self._ddl)
+
+    @staticmethod
+    def _key(tok_name: str, text: str) -> str:
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return f"{tok_name}:{h}"
+
+    def get(self, tok_name: str, text: str) -> list[str] | None:
+        k = self._key(tok_name, text)
+        with self._lock, sqlite3.connect(self.path) as db:
+            cur = db.execute("SELECT v FROM tok_cache WHERE k=?", (k,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return row[0].split("\x1f")
+
+    def put(self, tok_name: str, text: str, tokens: list[str]) -> None:
+        k = self._key(tok_name, text)
+        v = "\x1f".join(tokens)
+        with self._lock, sqlite3.connect(self.path) as db:
+            db.execute("INSERT OR REPLACE INTO tok_cache(k,v) VALUES(?,?)", (k, v))
+
+
+# --------- фабрика токенизаторов ----------
+def make_tokenizer(pref: str | None = None) -> Tokenizer:
+    """
+    pref варианты:
+      - "tiktoken:cl100k_base"
+      - "hf:meta-llama/Llama-3.1-8B"
+      - "regex" (фолбэк)
+    """
+    if pref:
+        kind, _, arg = pref.partition(":")
+        try:
+            if kind == "tiktoken":
+                return TiktokenTokenizer(arg or "cl100k_base")
+            if kind == "hf":
+                return HFTokenizer(arg)
+        except Exception:
+            pass
+    return RegexWordTokenizer()
+
+
+_GLOBAL_TOK_CACHE = TokenCache()
+_GLOBAL_TOKENIZER = make_tokenizer(os.getenv("GENABILITY_TOKENIZER"))  # настройка через env
+
+
+def tok(text: str) -> list[str]:
+    cached = _GLOBAL_TOK_CACHE.get(_GLOBAL_TOKENIZER.name, text or "")
+    if cached is not None:
+        return cached
+    toks = _GLOBAL_TOKENIZER.tokenize(text or "")
+    _GLOBAL_TOK_CACHE.put(_GLOBAL_TOKENIZER.name, text or "", toks)
+    return toks
 
 
 def tokenize(text: str) -> List[str]:
@@ -101,23 +235,23 @@ def check_rule_block(items: List[Dict[str, Any]]) -> Dict[str, float]:
         total += 1
         v = it.get("v", [])
         n = it.get("n", "")
+
         # R1
         ok1 = isinstance(v, list) and 2 <= len(v) <= 4
         r1 += 1 if ok1 else 0
-        # R2
+
+        # R2 (и подготовим v_norms, чтобы не получить unbound)
+        v_norms: list[str] = []
         try:
             n_norm = normalize_answer(n)
-            v_norms = [normalize_answer(str(x.get("a", ""))) for x in v]
+            if isinstance(v, list):
+                v_norms = [normalize_answer(str(x.get("a", ""))) for x in v]
             ok2 = n_norm in v_norms
         except Exception:
             ok2 = False
         r2 += 1 if ok2 else 0
-        # R3
-        try:
-            # distinct после нормализации
-            uniq = len(set(v_norms)) == len(v_norms) if v else False
-        except Exception:
-            uniq = False
+        # R3 — уникальность ответов после нормализации
+        uniq = len(set(v_norms)) == len(v_norms) if v_norms else False
         r3 += 1 if uniq else 0
         # R4 (грубая эвристика «нет утечки»)
         q = (it.get("q") or "").lower()
@@ -152,6 +286,7 @@ class GenAbilityConfig:
     diversity_n: int = 2  # distinct-n
     min_entropy: float = 2.0  # порог «нет воды»
     field_item_keys: Tuple[str, ...] = ("q", "n", "v")  # проверка структуры item
+    tokenizer_pref: Optional[str] = None  # "tiktoken:cl100k_base" | "hf:meta-llama/Llama-3.1-8B" | "regex"
 
 
 def score_geometric(parts: Dict[str, float], weights: Weights) -> float:
@@ -170,6 +305,9 @@ def score_geometric(parts: Dict[str, float], weights: Weights) -> float:
 
 
 def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAbilityConfig()) -> Dict[str, Any]:
+    global _GLOBAL_TOKENIZER
+    if cfg.tokenizer_pref:
+        _GLOBAL_TOKENIZER = make_tokenizer(cfg.tokenizer_pref)
     rows = []
     by_prompt: Dict[str, List[Dict]] = {}
 
@@ -220,11 +358,11 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
                 for vv in it.get("v", []):
                     parts.append(str(vv.get("a", "")))
             out = " ".join(parts)
-        toks = tokenize(out or "")
+        toks = tok(out or "")
         diversity = distinct_n(toks, n=cfg.diversity_n)
 
         # нетривиальность: (1) низкое перекрытие с промптом; (2) достаточная «энтропия»
-        prompt_toks = set(tokenize(r.get("prompt", "")))
+        prompt_toks = set(tok(r.get("prompt", "")))
         ans_toks = set(toks)
         overlap = jaccard(prompt_toks, ans_toks)  # 0..1
         overlap_score = 1.0 - min(1.0, overlap / cfg.max_prompt_overlap)  # >0 лучше
@@ -264,11 +402,11 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
         else:
             # self-BLEU -> diversity; затем нормируем
             bleus = []
-            tokenized = [tokenize(x) for x in outs]
+            tokenized = [tok(x) for x in outs]  # tok возвращает "▁{id}" для модельных токенизаторов → уже строки
+            bleus = []
             for i, hyp in enumerate(tokenized):
                 refs = tokenized[:i] + tokenized[i + 1 :]
-                # BLEU с разглаживанием
-                b = sentence_bleu(refs, hyp, smoothing_function=_SMOOTH)
+                b = _sent_bleu(refs, hyp)  # безопасно: внутри всё приведётся к str
                 bleus.append(b)
             mean_bleu = statistics.mean(bleus) if bleus else 0.0
             consistency_by_pid[pid] = 1.0 - min(1.0, mean_bleu)
