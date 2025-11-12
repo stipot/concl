@@ -42,6 +42,21 @@ resume = true
 seed = 42
 temperature = 1.0
 truncate = 2000
-
 # опционально — имя выходного файла (шаблон можно не задавать)
 out = "" # пусто = сгенерировать автоматически
+
+[weights]
+consistency = 0.15
+diversity = 0.20
+non_trivial = 0.15
+rule_block = 0.25
+schema_valid = 0.25
+
+[genability]
+diversity_n = 2 
+field_item_keys = ["q", "n", "v"] 
+max_prompt_overlap = 0.6 
+min_entropy = 2.0 
+required_top_keys = ["items"] 
+tokcache_path = ".genability_tokcache.sqlite" 
+tokenizer_pref = "tiktoken:cl100k_base" # или "regex" / "hf:meta-llama/Llama-3.1-8B"

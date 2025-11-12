@@ -17,3 +17,5 @@ typer
 plotly
 dynaconf
 nltk
+tiktoken
+kaleido
