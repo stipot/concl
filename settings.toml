@@ -1,6 +1,7 @@
+# settings.toml
 # окружения поддерживаются секциями: [default], [dev], [prod]
 [default]
-
+verify_ssl = true
 [llm]
 provider = "openai" # "openai" | "openai-compat" (для GigaChat и др.)
 
@@ -9,7 +10,7 @@ base_url = "https://api.openai.com/v1"
 default_headers = {"X-Request-Source" = "adaos"}
 default_query = {}
 max_retries = 5
-timeout = 30.0
+timeout = 180.0
 
 # для openai-compat (например, GigaChat Pro)
 [llm.compat]
@@ -44,6 +45,10 @@ temperature = 1.0
 truncate = 2000
 # опционально — имя выходного файла (шаблон можно не задавать)
 out = "" # пусто = сгенерировать автоматически
+
+[llm.gigachat]
+timeout = 30.0
+verify_ssl = false
 
 [weights]
 consistency = 0.15

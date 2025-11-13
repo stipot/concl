@@ -309,3 +309,21 @@
   После обучения бинарных классификаторов убедиться в возврате автокодировщика в `train()` режим и `requires_grad=True` для всех параметров.
 
 Не переписывайте весь код, только внесите указанные изменения в существующие части.
+
+## План исполнения
+
+```bash
+# gpt-5
+python step01/ds_generator2.py gen --exp exp1 --model gpt-5
+# gpt-4o
+python step01/ds_generator2.py gen --exp exp1 --model gpt-4o
+# gpt-5-nano-2025-08-07
+python step01/ds_generator2.py gen --exp exp1 --model gpt-5-nano-2025-08-07
+python step01/validator.py --input step01/data/gpt-5-nano-2025-08-07_exp1_generated_questions_en.jsonl --out step01/data/gpt-5-nano-2025-08-07_exp1_validation_results.jsonl --summary step01/data/gpt-5-nano-2025-08-07_exp1_validation_summary.json --use-embedding
+python step01/validator.py --input step01/data/gpt-5-nano-2025-08-07_exp1_generated_questions_en_inval.jsonl --out step01/data/gpt-5-nano-2025-08-07_exp1_validation_results_inval.jsonl --summary step01/data/gpt-5-nano-2025-08-07_exp1_validation_summary_inval.json --use-embedding
+# GigaChat Light
+python step01/ds_generator3.py gen --exp exp1 --provider gigachat --model GigaChat --out step01/data/gigachat_GigaChat_generated_questions_en.jsonl
+python step01/validator.py --input step01/data/GigaChat_exp1_generated_questions_en.jsonl --out step01/data/GigaChat_exp1_validation_results.jsonl --summary step01/data/GigaChat_exp1_validation_summary.json --use-embedding
+python step01/validator.py --input step01/data/GigaChat_exp1_generated_questions_en_inval.jsonl --out step01/data/GigaChat_exp1_validation_results_inval.jsonl --summary step01/data/GigaChat_exp1_validation_summary_inval.json --use-embedding
+
+```
