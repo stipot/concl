@@ -1,15 +1,12 @@
 # genability_metric.py
 from __future__ import annotations
-import re, json, math, statistics
+import re, json, math, statistics, sqlite3, hashlib, os, threading
 from dataclasses import dataclass
-from typing import List, Dict, Any, Tuple, Optional, Callable, Sequence
-import sqlite3, hashlib, os, threading
+from typing import List, Dict, Any, Tuple, Optional, Sequence
 import numpy as np
 import pandas as pd
-import tiktoken
-from transformers import AutoTokenizer
 
-# ------- утилиты токенизации / нормализации -------
+# ========= NLTK (опционально) =========
 try:
     from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
@@ -17,13 +14,11 @@ try:
     _HAS_NLTK = True
 
     def _sent_bleu(refs: list[list[Any]], hyp: list[Any]) -> float:
-        # нормализуем типы к List[List[str]] и List[str]
         refs_s = [_to_str_tokens(r) for r in (refs or []) if r]
         hyp_s = _to_str_tokens(hyp or [])
         if not refs_s or not hyp_s:
             return 0.0
         b = sentence_bleu(refs_s, hyp_s, smoothing_function=_SMOOTH)
-        # NLTK возвращает float; на всякий случай форсируем
         return float(b) if isinstance(b, (int, float)) else 0.0
 
 except Exception:
@@ -31,7 +26,6 @@ except Exception:
     _SMOOTH = None
 
     def _sent_bleu(refs: list[list[Any]], hyp: list[Any]) -> float:
-        # graceful fallback без NLTK
         return 0.0
 
 
@@ -39,16 +33,11 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def _to_str_tokens(seq: Sequence[Any]) -> list[str]:
-    # приводим любой список токенов (int|str|др.) к List[str]
-    out: list[str] = []
-    for t in seq or []:
-        out.append(str(t))
-    return out
+    return [str(t) for t in (seq or [])]
 
 
+# ========= Токенизация + кеш =========
 class Tokenizer:
-    """Абстрактный токенизатор: возвращает список 'инкенов' (строковых) для универсальности distinct/self-BLEU."""
-
     def __init__(self, name: str):
         self.name = name
 
@@ -66,17 +55,22 @@ class RegexWordTokenizer(Tokenizer):
 
 class TiktokenTokenizer(Tokenizer):
     def __init__(self, enc_name: str = "cl100k_base"):
+        # ленивый импорт
+        import tiktoken
+
         self.enc = tiktoken.get_encoding(enc_name)
         super().__init__(f"tiktoken.{enc_name}")
 
     def tokenize(self, text: str) -> list[str]:
-        # Превратим числа токенов в строки, чтобы distinct-n был совместим
         ids = self.enc.encode(text or "")
         return [f"▁{i}" for i in ids]
 
 
 class HFTokenizer(Tokenizer):
     def __init__(self, pretrained: str):
+        # ленивый импорт
+        from transformers import AutoTokenizer
+
         self.tok = AutoTokenizer.from_pretrained(pretrained, use_fast=True)
         super().__init__(f"hf.{pretrained}")
 
@@ -85,13 +79,7 @@ class HFTokenizer(Tokenizer):
         return [f"▁{i}" for i in ids]
 
 
-# --------- диск-кеш для токенов (sqlite) ----------
 class TokenCache:
-    """
-    Кеширует токены по (tokenizer_name, text_hash).
-    Формат значения: '\x1f'.join(tokens) — компактно и просто.
-    """
-
     _ddl = "CREATE TABLE IF NOT EXISTS tok_cache (k TEXT PRIMARY KEY, v TEXT NOT NULL);"
 
     def __init__(self, path: str = ".genability_tokcache.sqlite"):
@@ -103,17 +91,14 @@ class TokenCache:
 
     @staticmethod
     def _key(tok_name: str, text: str) -> str:
-        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        h = hashlib.sha256((text or "").encode("utf-8")).hexdigest()
         return f"{tok_name}:{h}"
 
     def get(self, tok_name: str, text: str) -> list[str] | None:
         k = self._key(tok_name, text)
         with self._lock, sqlite3.connect(self.path) as db:
-            cur = db.execute("SELECT v FROM tok_cache WHERE k=?", (k,))
-            row = cur.fetchone()
-            if not row:
-                return None
-            return row[0].split("\x1f")
+            row = db.execute("SELECT v FROM tok_cache WHERE k=?", (k,)).fetchone()
+            return None if not row else row[0].split("\x1f")
 
     def put(self, tok_name: str, text: str, tokens: list[str]) -> None:
         k = self._key(tok_name, text)
@@ -122,14 +107,7 @@ class TokenCache:
             db.execute("INSERT OR REPLACE INTO tok_cache(k,v) VALUES(?,?)", (k, v))
 
 
-# --------- фабрика токенизаторов ----------
 def make_tokenizer(pref: str | None = None) -> Tokenizer:
-    """
-    pref варианты:
-      - "tiktoken:cl100k_base"
-      - "hf:meta-llama/Llama-3.1-8B"
-      - "regex" (фолбэк)
-    """
     if pref:
         kind, _, arg = pref.partition(":")
         try:
@@ -143,7 +121,7 @@ def make_tokenizer(pref: str | None = None) -> Tokenizer:
 
 
 _GLOBAL_TOK_CACHE = TokenCache()
-_GLOBAL_TOKENIZER = make_tokenizer(os.getenv("GENABILITY_TOKENIZER"))  # настройка через env
+_GLOBAL_TOKENIZER = make_tokenizer(os.getenv("GENABILITY_TOKENIZER"))
 
 
 def tok(text: str) -> list[str]:
@@ -155,14 +133,9 @@ def tok(text: str) -> list[str]:
     return toks
 
 
-def tokenize(text: str) -> List[str]:
-    return _WORD_RE.findall((text or "").lower())
-
-
+# ========= утилиты метрик =========
 def distinct_n(tokens: List[str], n: int = 2) -> float:
-    if n <= 0:
-        return 0.0
-    if len(tokens) < n:
+    if n <= 0 or len(tokens) < n:
         return 0.0
     ngrams = set(tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1))
     return len(ngrams) / max(1, len(tokens) - n + 1)
@@ -194,53 +167,24 @@ def safe_json_parse(s: str) -> Tuple[bool, Optional[Any], Optional[str]]:
 
 
 def normalize_answer(s: str) -> str:
-    # R3: lowercase, trim, remove articles
     s = (s or "").strip().lower()
     s = re.sub(r"\b(a|an|the)\b", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-# ------- формат входа -------
-"""
-Ожидаемый вход:
-records: List[Dict] где каждый элемент как минимум содержит:
-{
-  "prompt_id": "id-1",
-  "prompt": "...",
-  "output_text": "...",              # либо
-  "output_json": "{...}",            # ожидаем наш формат с полями: items -> [ { "q": ..., "n": ..., "v": [ {"c": "...", "a": "..."} ... ] } ... ]
-  "meta": { "expected_json": True, "required_keys": ["items"], ... }   # опционально
-}
-
-Если есть несколько генераций для одного prompt_id, модуль посчитает self-consistency.
-"""
-
-
-# ------- проверка правил R1-R4 для нашего формата -------
+# ========= проверка R1–R4 =========
 def check_rule_block(items: List[Dict[str, Any]]) -> Dict[str, float]:
-    """
-    Возвращает доли элементов, удовлетворяющих R1..R4:
-      R1: 2–4 контекста в "v"
-      R2: baseline n совпадает (семантически) с одним из ответов в "v"
-      R3: ответы по контекстам различимы после нормализации
-      R4: отсутствие явной утечки (признаки 'forbidden', 'leak', можно расширить)
-    """
     if not isinstance(items, list) or not items:
         return {"r1": 0.0, "r2": 0.0, "r3": 0.0, "r4": 1.0}
-
     r1 = r2 = r3 = r4 = 0
     total = 0
     for it in items:
         total += 1
         v = it.get("v", [])
         n = it.get("n", "")
-
-        # R1
         ok1 = isinstance(v, list) and 2 <= len(v) <= 4
         r1 += 1 if ok1 else 0
-
-        # R2 (и подготовим v_norms, чтобы не получить unbound)
         v_norms: list[str] = []
         try:
             n_norm = normalize_answer(n)
@@ -250,25 +194,17 @@ def check_rule_block(items: List[Dict[str, Any]]) -> Dict[str, float]:
         except Exception:
             ok2 = False
         r2 += 1 if ok2 else 0
-        # R3 — уникальность ответов после нормализации
         uniq = len(set(v_norms)) == len(v_norms) if v_norms else False
         r3 += 1 if uniq else 0
-        # R4 (грубая эвристика «нет утечки»)
         q = (it.get("q") or "").lower()
         leak_indicators = ["answer is in the prompt", "see context above", "as provided earlier"]
         ok4 = not any(tok in q for tok in leak_indicators)
         r4 += 1 if ok4 else 0
-
     denom = max(1, total)
-    return {
-        "r1": r1 / denom,
-        "r2": r2 / denom,
-        "r3": r3 / denom,
-        "r4": r4 / denom,
-    }
+    return {"r1": r1 / denom, "r2": r2 / denom, "r3": r3 / denom, "r4": r4 / denom}
 
 
-# ------- основная метрика -------
+# ========= конфиг/веса =========
 @dataclass
 class Weights:
     schema_valid: float = 0.25
@@ -282,15 +218,15 @@ class Weights:
 class GenAbilityConfig:
     weights: Weights = Weights()
     required_top_keys: Tuple[str, ...] = ("items",)
-    max_prompt_overlap: float = 0.6  # чем меньше перекрытие ответа с промптом, тем лучше
-    diversity_n: int = 2  # distinct-n
-    min_entropy: float = 2.0  # порог «нет воды»
-    field_item_keys: Tuple[str, ...] = ("q", "n", "v")  # проверка структуры item
-    tokenizer_pref: Optional[str] = None  # "tiktoken:cl100k_base" | "hf:meta-llama/Llama-3.1-8B" | "regex"
+    max_prompt_overlap: float = 0.6
+    diversity_n: int = 2
+    min_entropy: float = 2.0
+    field_item_keys: Tuple[str, ...] = ("q", "n", "v")
+    tokenizer_pref: Optional[str] = None
+    tokcache_path: str = ".genability_tokcache.sqlite"
 
 
 def score_geometric(parts: Dict[str, float], weights: Weights) -> float:
-    # геометрическое среднее с весами; значения «клипуем» в [1e-6, 1]
     comps = []
     for key, w in [
         ("schema_valid", weights.schema_valid),
@@ -305,9 +241,13 @@ def score_geometric(parts: Dict[str, float], weights: Weights) -> float:
 
 
 def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAbilityConfig()) -> Dict[str, Any]:
-    global _GLOBAL_TOKENIZER
+    global _GLOBAL_TOKENIZER, _GLOBAL_TOK_CACHE
     if cfg.tokenizer_pref:
         _GLOBAL_TOKENIZER = make_tokenizer(cfg.tokenizer_pref)
+    # переназначим кеш, если путь в конфиге иной
+    if _GLOBAL_TOK_CACHE.path != cfg.tokcache_path:
+        _GLOBAL_TOK_CACHE = TokenCache(cfg.tokcache_path)
+
     rows = []
     by_prompt: Dict[str, List[Dict]] = {}
 
@@ -326,14 +266,12 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
             elif isinstance(ojson_raw, str):
                 json_ok, parsed, err = safe_json_parse(ojson_raw)
 
-        # схема/структура
         top_ok = False
         items = []
         item_struct_ok = 0.0
         if json_ok and isinstance(parsed, dict):
             top_ok = all(k in parsed for k in cfg.required_top_keys)
             items = parsed.get("items", [])
-            # проверим структуру каждого item
             good = 0
             for it in items if isinstance(items, list) else []:
                 if all(key in it for key in cfg.field_item_keys):
@@ -343,14 +281,11 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
         schema_valid = 1.0 if (not expected_json) else (1.0 if (json_ok and top_ok) else 0.0)
         schema_valid = 0.5 * schema_valid + 0.5 * item_struct_ok
 
-        # правила R1–R4 (только если есть items)
         rb = check_rule_block(items) if items else {"r1": 0.0, "r2": 0.0, "r3": 0.0, "r4": 1.0}
         rule_block = (rb["r1"] + rb["r2"] + rb["r3"] + rb["r4"]) / 4.0
 
-        # разнообразие на уровне ответа (distinct-n)
         out = text
         if not out and items:
-            # соберём текст из q/n/a для оценки различимости
             parts = []
             for it in items:
                 parts.append(str(it.get("q", "")))
@@ -361,15 +296,13 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
         toks = tok(out or "")
         diversity = distinct_n(toks, n=cfg.diversity_n)
 
-        # нетривиальность: (1) низкое перекрытие с промптом; (2) достаточная «энтропия»
         prompt_toks = set(tok(r.get("prompt", "")))
         ans_toks = set(toks)
-        overlap = jaccard(prompt_toks, ans_toks)  # 0..1
-        overlap_score = 1.0 - min(1.0, overlap / cfg.max_prompt_overlap)  # >0 лучше
+        overlap = jaccard(prompt_toks, ans_toks)
+        overlap_score = 1.0 - min(1.0, overlap / cfg.max_prompt_overlap)
         entropy_score = min(1.0, char_entropy(out or "") / max(cfg.min_entropy, 1e-6))
         non_trivial = 0.6 * overlap_score + 0.4 * entropy_score
 
-        # запишем построчно
         rows.append(
             {
                 "prompt_id": pid,
@@ -380,7 +313,7 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
             }
         )
 
-    # согласованность по одному prompt_id (self-BLEU низкий -> хорошо)
+    # согласованность внутри prompt_id
     consistency_by_pid = {}
     for pid, lst in by_prompt.items():
         outs = []
@@ -390,7 +323,6 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
             elif r.get("output_json"):
                 ok, obj, _ = safe_json_parse(r["output_json"]) if isinstance(r["output_json"], str) else (True, r["output_json"], None)
                 if ok and isinstance(obj, dict) and "items" in obj:
-                    # склеим ответы
                     parts = []
                     for it in obj.get("items", []):
                         parts.append(str(it.get("n", "")))
@@ -398,23 +330,19 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
                             parts.append(str(vv.get("a", "")))
                     outs.append(" ".join(parts))
         if len(outs) <= 1 or not _HAS_NLTK:
-            consistency_by_pid[pid] = 1.0  # нейтрально, если сравнивать нечего/нет nltk
+            consistency_by_pid[pid] = 1.0
         else:
-            # self-BLEU -> diversity; затем нормируем
-            bleus = []
-            tokenized = [tok(x) for x in outs]  # tok возвращает "▁{id}" для модельных токенизаторов → уже строки
+            tokenized = [tok(x) for x in outs]
             bleus = []
             for i, hyp in enumerate(tokenized):
                 refs = tokenized[:i] + tokenized[i + 1 :]
-                b = _sent_bleu(refs, hyp)  # безопасно: внутри всё приведётся к str
-                bleus.append(b)
+                bleus.append(_sent_bleu(refs, hyp))
             mean_bleu = statistics.mean(bleus) if bleus else 0.0
             consistency_by_pid[pid] = 1.0 - min(1.0, mean_bleu)
 
     df = pd.DataFrame(rows)
     if not df.empty:
         df["consistency"] = df["prompt_id"].map(consistency_by_pid).fillna(1.0)
-        # итог на запись
         df["GAI"] = df.apply(
             lambda r: score_geometric(
                 {
@@ -431,7 +359,6 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
     else:
         df = pd.DataFrame(columns=["prompt_id", "schema_valid", "rule_block", "diversity", "non_trivial", "consistency", "GAI"])
 
-    # агрегаты
     agg = (
         {}
         if df.empty
@@ -448,29 +375,133 @@ def compute_metrics(records: List[Dict[str, Any]], cfg: GenAbilityConfig = GenAb
     return {"per_item": df, "by_prompt_consistency": consistency_by_pid, "aggregate": agg, "config": cfg}
 
 
-# ------- пример использования -------
+# ========= CLI (Typer) =========
+def _load_settings(path: Optional[str]) -> Dict[str, Any]:
+    if not path:
+        return {}
+    import tomllib as toml  # Python 3.11+
+
+    with open(path, "rb") as f:
+        return toml.load(f)
+
+
+def _records_from_jsonl(paths: List[str]) -> List[Dict[str, Any]]:
+    recs: List[Dict[str, Any]] = []
+    for p in paths:
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                recs.append(obj)
+    return recs
+
+
+def _write_reports(res: Dict[str, Any], out_dir: str, tag: str = "report") -> None:
+    os.makedirs(out_dir, exist_ok=True)
+    per_item: pd.DataFrame = res["per_item"]
+    per_item.to_csv(os.path.join(out_dir, f"{tag}_per_item.csv"), index=False)
+    with open(os.path.join(out_dir, f"{tag}_aggregate.json"), "w", encoding="utf-8") as f:
+        json.dump(res["aggregate"], f, ensure_ascii=False, indent=2)
+
+
+def _cfg_from_sources(settings: Dict[str, Any], **overrides) -> GenAbilityConfig:
+    # извлекаем веса
+    w = settings.get("weights", {})
+    weights = Weights(
+        schema_valid=float(w.get("schema_valid", overrides.get("w_schema_valid", 0.25))),
+        rule_block=float(w.get("rule_block", overrides.get("w_rule_block", 0.25))),
+        diversity=float(w.get("diversity", overrides.get("w_diversity", 0.20))),
+        non_trivial=float(w.get("non_trivial", overrides.get("w_non_trivial", 0.15))),
+        consistency=float(w.get("consistency", overrides.get("w_consistency", 0.15))),
+    )
+    g = settings.get("genability", {})
+    return GenAbilityConfig(
+        weights=weights,
+        required_top_keys=tuple(g.get("required_top_keys", ("items",))),
+        max_prompt_overlap=float(g.get("max_prompt_overlap", overrides.get("max_prompt_overlap", 0.6))),
+        diversity_n=int(g.get("diversity_n", overrides.get("diversity_n", 2))),
+        min_entropy=float(g.get("min_entropy", overrides.get("min_entropy", 2.0))),
+        field_item_keys=tuple(g.get("field_item_keys", ("q", "n", "v"))),
+        tokenizer_pref=str(overrides.get("tokenizer_pref", g.get("tokenizer_pref", None))) if (overrides.get("tokenizer_pref", None) or g.get("tokenizer_pref", None)) else None,
+        tokcache_path=str(g.get("tokcache_path", overrides.get("tokcache_path", ".genability_tokcache.sqlite"))),
+    )
+
+
+# ---- Typer entrypoint
+def _build_app():
+    import typer
+
+    app = typer.Typer(add_completion=False, no_args_is_help=True)
+
+    @app.command("score")
+    def score(
+        inputs: List[str] = typer.Argument(..., help="Пути к JSONL с записями (records). Можно несколько."),
+        out_dir: str = typer.Option("./reports", help="Куда писать отчёты"),
+        settings_toml: Optional[str] = typer.Option(None, help="settings.toml с параметрами метрики"),
+        tokenizer_pref: Optional[str] = typer.Option(None, help='Принудительный токенизатор: "regex" | "tiktoken:cl100k_base" | "hf:model"'),
+        diversity_n: Optional[int] = typer.Option(None, help="n для distinct-n"),
+        min_entropy: Optional[float] = typer.Option(None, help="Порог энтропии для нетривиальности"),
+        max_prompt_overlap: Optional[float] = typer.Option(None, help="Нормирующий коэффициент для Jaccard"),
+        w_schema_valid: Optional[float] = typer.Option(None, help="Вес компоненты schema_valid"),
+        w_rule_block: Optional[float] = typer.Option(None, help="Вес компоненты rule_block"),
+        w_diversity: Optional[float] = typer.Option(None, help="Вес компоненты diversity"),
+        w_non_trivial: Optional[float] = typer.Option(None, help="Вес компоненты non_trivial"),
+        w_consistency: Optional[float] = typer.Option(None, help="Вес компоненты consistency"),
+        tag: str = typer.Option("report", help="Префикс имени файлов отчёта"),
+    ):
+        settings = _load_settings(settings_toml)
+        cfg = _cfg_from_sources(
+            settings,
+            tokenizer_pref=tokenizer_pref,
+            diversity_n=diversity_n,
+            min_entropy=min_entropy,
+            max_prompt_overlap=max_prompt_overlap,
+            w_schema_valid=w_schema_valid,
+            w_rule_block=w_rule_block,
+            w_diversity=w_diversity,
+            w_non_trivial=w_non_trivial,
+            w_consistency=w_consistency,
+        )
+        recs = _records_from_jsonl(inputs)
+        res = compute_metrics(recs, cfg=cfg)
+        _write_reports(res, out_dir, tag)
+        # короткий вывод в консоль
+        print(json.dumps(res["aggregate"], ensure_ascii=False, indent=2))
+
+    return app
+
+
+# python genability_metric.py score ...
 if __name__ == "__main__":
-    demo_records = [
-        {
-            "prompt_id": "p1",
-            "prompt": 'Generate 2–4 contexts; include baseline "n".',
-            "output_json": json.dumps(
-                {
-                    "items": [
-                        {"q": "Q1", "n": "blue", "v": [{"c": "c1", "a": "blue"}, {"c": "c2", "a": "red"}]},
-                        {"q": "Q2", "n": "cat", "v": [{"c": "c1", "a": "dog"}, {"c": "c2", "a": "cat"}]},
-                    ]
-                }
-            ),
-            "meta": {"expected_json": True},
-        },
-        {"prompt_id": "p1", "prompt": 'Generate 2–4 contexts; include baseline "n".', "output_text": "Q1 n=blue v:blue/red; Q2 n=cat v:dog/cat", "meta": {"expected_json": False}},
-        {
-            "prompt_id": "p2",
-            "prompt": "Same rules.",
-            "output_json": json.dumps({"items": [{"q": "Q3", "n": "a", "v": [{"c": "c1", "a": "a"}, {"c": "c2", "a": "a"}]}]}),
-        },
-    ]
-    res = compute_metrics(demo_records)
-    print(res["aggregate"])
-    print(res["per_item"].round(3))
+    try:
+        import typer
+
+        _build_app()()
+    except ImportError:
+        # если Typer не установлен, просто демонстрация
+        demo_records = [
+            {
+                "prompt_id": "p1",
+                "prompt": 'Generate 2–4 contexts; include baseline "n".',
+                "output_json": json.dumps(
+                    {
+                        "items": [
+                            {"q": "Q1", "n": "blue", "v": [{"c": "c1", "a": "blue"}, {"c": "c2", "a": "red"}]},
+                            {"q": "Q2", "n": "cat", "v": [{"c": "c1", "a": "dog"}, {"c": "c2", "a": "cat"}]},
+                        ]
+                    }
+                ),
+                "meta": {"expected_json": True},
+            },
+            {
+                "prompt_id": "p1",
+                "prompt": 'Generate 2–4 contexts; include baseline "n".',
+                "output_text": "Q1 n=blue v:blue/red; Q2 n=cat v:dog/cat",
+                "meta": {"expected_json": False},
+            },
+        ]
+        res = compute_metrics(demo_records)
+        print(res["aggregate"])
+        print(res["per_item"].round(3))
