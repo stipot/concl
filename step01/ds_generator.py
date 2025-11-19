@@ -779,7 +779,7 @@ def cmd_gen(
     out: str = typer.Option(None, help="Путь вывода JSONL. По умолчанию DATA_DIR/{model}_generated_questions_{lang}.jsonl"),
     model: str = typer.Option("gpt-5-nano-2025-08-07", help=f"Имя модели. Поддерживаемые: {', '.join(SUPPORTED_MODELS)}"),
     lang: str = typer.Option("en", help="Код языка для пометки данных в имени файла."),
-    num_questions: int = typer.Option(10, min=1, max=50, help="Сколько вопросов на один subject."),
+    num_questions: int = typer.Option(50, min=1, max=50, help="Сколько вопросов на один subject."),
     temperature: float = typer.Option(1.0, min=0.0, max=2.0, help="Температура генерации. Некоторые модели поддерживают только значение 1; в таком случае параметр будет опущен."),
     max_tokens: int = typer.Option(7000, min=512, max=8192),
     seed: Optional[int] = typer.Option(None, help="Фиксировать seed (если поддерживается)."),

@@ -11,6 +11,8 @@ from urllib3.util.retry import Retry
 from settings_loader import load_settings, get_typed
 import time, uuid, base64
 import requests
+import logging, re, time, os
+from logging.handlers import RotatingFileHandler
 
 
 # ---------- Интерфейс ----------
@@ -34,6 +36,143 @@ class LLMProvider(Protocol):
 
 
 REASONING_HINTS = ("gpt-5", "o3", "o4")
+import os, json, time, logging
+from logging.handlers import RotatingFileHandler
+from typing import Any, Dict
+
+_DEFAULT_LOG_PATH = "./logs/llm_debug.jsonl"
+_LLM_LOGGER = None
+
+
+def _salvage_items_array(s: str) -> Optional[str]:
+    i = s.find('"items"')
+    if i < 0:
+        return None
+    j = s.find("[", i)
+    if j < 0:
+        return None
+
+    k, depth, last_end = j + 1, 0, None
+    in_str, esc = False, False
+    while k < len(s):
+        ch = s[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    last_end = k
+        k += 1
+
+    if last_end is None:
+        return None
+    arr = s[j : last_end + 1]  # [ {…}, {…}, … ] до последнего полного объекта
+    return '{ "items": ' + arr + " }"
+
+
+from collections.abc import Mapping
+
+
+def _deep_get(d: Any, path: str, default: Any = None) -> Any:
+    cur: Any = d
+    for part in path.split("."):
+        if isinstance(cur, Mapping):
+            if part not in cur:
+                return default
+            cur = cur[part]
+        else:
+            # допускаем объект с атрибутом .get
+            try:
+                cur = cur.get(part)  # type: ignore[attr-defined]
+                if cur is None:
+                    return default
+            except Exception:
+                return default
+    return cur
+
+
+def _as_bool(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() in {"1", "true", "yes", "on", "y"}
+    return False
+
+
+def _as_str_path(v: Any, default: str) -> str:
+    """Гарантируем строку-путь, иначе отдаём default."""
+    if isinstance(v, str) and v.strip():
+        return v
+    return default
+
+
+# ---- logger singleton
+_LLM_LOGGER: Optional[logging.Logger] = None
+
+
+def _get_llm_logger(path: str) -> logging.Logger:
+    """path уже ДОЛЖЕН быть строкой — создаём ротационный JSONL-логгер."""
+    global _LLM_LOGGER
+    if _LLM_LOGGER:
+        return _LLM_LOGGER
+    dirn = os.path.dirname(path) or "."
+    os.makedirs(dirn, exist_ok=True)
+    logger = logging.getLogger("llmdebug")
+    logger.setLevel(logging.INFO)
+    handler = RotatingFileHandler(path, maxBytes=10_000_000, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    _LLM_LOGGER = logger
+    return logger
+
+
+def _redact_headers(h: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(h, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in h.items():
+        if isinstance(v, str) and k.lower() in ("authorization", "proxy-authorization"):
+            out[k] = "<REDACTED>"
+        else:
+            out[k] = v
+    return out
+
+
+def _log_llm_event(settings: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Безопасный JSONL-логгер: нормализуем типы, не падаем на ошибках."""
+    try:
+        # 1) включение через ENV имеет приоритет
+        env_enabled = os.getenv("LLM_LOG_ENABLED")
+        enabled = _as_bool(env_enabled) if env_enabled is not None else None
+
+        # 2) иначе — из настроек
+        if enabled is None:
+            enabled = _as_bool(_deep_get(settings, "debug.llm_log_enabled", False))
+        if not enabled:
+            return
+
+        # 3) путь: ENV -> settings -> default; жёстко приводим к str
+        raw_path_env = os.getenv("LLM_LOG_PATH")
+        raw_path_set = _deep_get(settings, "debug.llm_log_path", _DEFAULT_LOG_PATH)
+        path = _as_str_path(raw_path_env if raw_path_env is not None else raw_path_set, _DEFAULT_LOG_PATH)
+
+        event.setdefault("ts", time.time())
+        _get_llm_logger(path).info(json.dumps(event, ensure_ascii=False))
+    except Exception:
+        # логирование не должно мешать рабочему потоку
+        pass
 
 
 def is_reasoning_model(name: str) -> bool:
@@ -148,16 +287,51 @@ class GigaChatProvider(LLMProvider):
         except (TypeError, ValueError):
             self._timeout = 40.0 """
 
+    def _post_logged(
+        self, *, url: str, headers: Dict[str, str], json_body: Optional[Dict[str, Any]] = None, form_body: Optional[Dict[str, Any]] = None, tag: str = "chat"
+    ) -> requests.Response:
+        t0 = time.perf_counter()
+        r = self._session.post(url, headers=headers, json=json_body, data=form_body, timeout=self._timeout)
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        try:
+            resp_text = r.text
+        except Exception:
+            resp_text = None
+
+        _log_llm_event(
+            self.settings,
+            {
+                "provider": "gigachat",
+                "phase": tag,  # "oauth" | "chat" | "chat_retry"
+                "status": r.status_code,
+                "duration_ms": dt_ms,
+                "request": {
+                    "method": "POST",
+                    "url": url,
+                    "headers": _redact_headers(headers),
+                    "json": json_body,
+                    "form": form_body,
+                },
+                "response": {
+                    "headers": dict(r.headers or {}),
+                    "text": resp_text,
+                },
+            },
+        )
+        return r
+
     # --- сервисные методы ---
     def _now(self) -> float:
         return time.time()
 
-    def _ensure_token(self) -> str:
-        # обновляем за минуту до истечения
-        if self._token and (self._now() < self._exp_ts - 60):
+    def _invalidate_token(self) -> None:
+        self._token = None
+        self._exp_ts = 0.0
+
+    def _ensure_token(self, force: bool = False) -> str:
+        if not force and self._token and (self._now() < self._exp_ts - 60):
             return self._token
 
-        # запрос токена по OAuth 2.0
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
@@ -165,9 +339,8 @@ class GigaChatProvider(LLMProvider):
             "RqUID": str(uuid.uuid4()),
         }
         data = {"scope": self._scope}
-        print("step_insure_token")
         try:
-            resp = self._session.post(self._auth_url, headers=headers, data=data, timeout=self._timeout)
+            resp = self._post_logged(url=self._auth_url, headers=headers, form_body=data, tag="oauth")
         except requests.exceptions.SSLError as e:
             raise RuntimeError("TLS verification failed for GigaChat OAuth. " "Set [llm.gigachat].verify_ssl to a PEM bundle path or false (temporary). " f"Details: {e}")
         if resp.status_code != 200:
@@ -175,10 +348,9 @@ class GigaChatProvider(LLMProvider):
 
         j = resp.json()
         token = j.get("access_token")
-        exp = j.get("expires_at")  # unix ts по докам
+        exp = j.get("expires_at")
         if not token:
             raise RuntimeError("GigaChat OAuth: no access_token in response")
-        # если expires_at нет, дадим дефолт 29 мин
         if not isinstance(exp, (int, float)):
             exp = self._now() + 29 * 60
 
@@ -188,7 +360,6 @@ class GigaChatProvider(LLMProvider):
 
     # --- основной метод интерфейса ---
     def generate_text(self, prompt: str, opt: LLMOptions) -> Tuple[str, Dict[str, Any]]:
-        # Готовим сообщения (как у OpenAI)
         msgs = [
             {"role": "system", "content": "You produce STRICT JSON only. No prose."},
             {"role": "user", "content": prompt},
@@ -196,31 +367,53 @@ class GigaChatProvider(LLMProvider):
         if getattr(opt, "log_prompt", False):
             _print_block("[PROMPT → GigaChat]", prompt, opt.truncate)
 
-        token = self._ensure_token()
+        def _build_headers(tok: str) -> Dict[str, str]:
+            return {
+                "Authorization": f"Bearer {tok}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "X-Request-Source": "adaos-dsgen",
+                "X-Client-Request-Id": str(uuid.uuid4()),
+            }
 
         url = f"{self._base_url.rstrip('/')}/api/v1/chat/completions"
         body: Dict[str, Any] = {
             "model": opt.model or "GigaChat",
             "messages": msgs,
         }
-        # стандартные сэмплинг-параметры. Если какие-то не поддерживаются, сервер их проигнорирует.
         if opt.max_tokens:
             body["max_tokens"] = int(opt.max_tokens)
         if opt.temperature is not None:
             body["temperature"] = float(opt.temperature)
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        }
+        # 1-й вызов
+        token = self._ensure_token()
+        headers = _build_headers(token)
+        r = self._post_logged(url=url, headers=headers, json_body=body, tag="chat")
 
-        r = self._session.post(url, headers=headers, json=body, timeout=self._timeout)
+        # если токен истёк — обновляем и повторяем ОДИН раз
+        if r.status_code == 401 and "Token has expired" in (r.text or ""):
+            _print_block("[GigaChat TOKEN]", "Access token expired → refresh & retry once", 500)
+            self._invalidate_token()
+            token = self._ensure_token(force=True)
+            headers = _build_headers(token)
+            r = self._post_logged(url=url, headers=headers, json_body=body, tag="chat_retry")
+
+        # (опционально) общая обработка rate/5xx, если у тебя нет _post():
+        if r.status_code in (429, 500, 502, 503, 504):
+            # уважим Retry-After и сделаем один бэкофф-повтор
+            ra = r.headers.get("Retry-After")
+            try:
+                wait = int(ra) if ra and str(ra).isdigit() else 2
+            except Exception:
+                wait = 2
+            time.sleep(min(wait, 16))
+            r = self._post_logged(url=url, headers=headers, json_body=body, tag="chat_retry2")
+
         if r.status_code != 200:
             raise RuntimeError(f"GigaChat chat error: {r.status_code} {r.text}")
 
         jr = r.json()
-        # формат ответа схож с OpenAI: choices[0].message.content
         try:
             ch0 = (jr.get("choices") or [])[0]
             text = ((ch0.get("message") or {}).get("content") or "").strip()
@@ -267,12 +460,17 @@ class OpenAIProvider(LLMProvider):
             {"role": "system", "content": "You produce STRICT JSON only. No prose."},
             {"role": "user", "content": prompt},
         ]
+        """ use_responses = opt.use_responses and is_reasoning_model(opt.model)
+        if use_responses and (opt.json_schema or opt.json_mode in ("schema", "object")):
+            use_responses = False """
         use_responses = opt.use_responses and is_reasoning_model(opt.model)
 
         def _run(mode: str) -> Tuple[str, Dict[str, Any]]:
             if getattr(opt, "log_prompt", False):
                 _print_block("[PROMPT → LLM]", prompt, opt.truncate)
+
             if use_responses:
+                # ---------- Responses API: НЕ кладём response_format ----------
                 p = {
                     "model": opt.model,
                     "input": [
@@ -281,29 +479,77 @@ class OpenAIProvider(LLMProvider):
                     ],
                     "max_output_tokens": int(opt.max_tokens),
                 }
-                if mode == "schema" and opt.json_schema:
-                    p["response_format"] = {"type": "json_schema", "json_schema": opt.json_schema}
-                elif mode == "object":
-                    p["response_format"] = {"type": "json_object"}
                 if opt.reasoning_effort:
                     p["reasoning"] = {"effort": opt.reasoning_effort}
 
-                raw_api = getattr(self._client.responses, "with_raw_response", None)
-                if raw_api and hasattr(raw_api, "create"):
-                    raw = raw_api.create(**p)
-                    resp = raw.parse()
-                else:
-                    resp = self._client.responses.create(**p)
+                # Усилим подсказку, если запрошен "schema"/"object"
+                if mode in ("schema", "object"):
+                    # мягкий инлайн-хинт вместо response_format
+                    extra_sys = "Return a SINGLE valid JSON object only."
+                    if mode == "schema" and opt.json_schema:
+                        try:
+                            name = opt.json_schema.get("json_schema", {}).get("name") or opt.json_schema.get("name") or "schema"
+                            extra_sys += f" Conform to the '{name}' schema keys and types."
+                        except Exception:
+                            pass
+                    p["input"][0]["content"] = p["input"][0]["content"] + " " + extra_sys
 
+                raw_api = getattr(self._client.responses, "with_raw_response", None)
+                t0 = time.perf_counter()
+                try:
+                    if raw_api and hasattr(raw_api, "create"):
+                        raw = raw_api.create(**p)
+                        resp = raw.parse()
+                    else:
+                        resp = self._client.responses.create(**p)
+                except TypeError as e:
+                    # старый SDK: подстраховка на случай, если где-то всё же проскочил response_format
+                    if "response_format" in str(e):
+                        # ретрай без любых «лишних» полей
+                        p.pop("response_format", None)
+                        if raw_api and hasattr(raw_api, "create"):
+                            raw = raw_api.create(**p)
+                            resp = raw.parse()
+                        else:
+                            t0 = time.perf_counter()
+                            resp = self._client.responses.create(**p)
+                    else:
+                        raise
+
+                # --- извлекаем текст из Responses ---
                 text = getattr(resp, "output_text", "") or ""
+
                 if not text:
+                    # новая схема SDK: resp.output[0].content[0].text[0].data
                     try:
+                        chunks = []
                         for out in getattr(resp, "output", None) or []:
-                            for part in getattr(out, "content", None) or []:
-                                if getattr(part, "type", None) == "output_text":
-                                    text += part.text or ""
+                            for content in getattr(out, "content", None) or []:
+                                if getattr(content, "type", None) == "output_text":
+                                    text_obj = getattr(content, "text", None)
+                                    # text_obj обычно list сегментов с .data
+                                    if isinstance(text_obj, list):
+                                        for seg in text_obj:
+                                            chunk = getattr(seg, "data", None)
+                                            if chunk:
+                                                chunks.append(str(chunk))
+                                    elif text_obj is not None:
+                                        # на всякий случай: старый/иной формат
+                                        chunks.append(str(text_obj))
+                        text = "".join(chunks)
                     except Exception:
-                        pass
+                        text = ""
+
+                # жёсткий fallback: сериализуем весь resp, чтобы потом salvage вытащил "items"
+                """ if not text:
+                    try:
+                        if hasattr(resp, "to_dict"):
+                            text = json.dumps(resp.to_dict(), ensure_ascii=False)
+                        elif hasattr(resp, "model_dump"):
+                            text = json.dumps(resp.model_dump(), ensure_ascii=False)
+                    except Exception:
+                        text = "" """
+
                 finish = getattr(resp, "finish_reason", None)
                 usage = getattr(resp, "usage", None)
                 meta = {
@@ -314,7 +560,22 @@ class OpenAIProvider(LLMProvider):
                     "completion_tokens": getattr(usage, "output_tokens", None) if usage else None,
                     "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
                 }
+                dt_ms = int((time.perf_counter() - t0) * 1000)
+                _log_llm_event(
+                    self.settings,
+                    {
+                        "provider": "openai",
+                        "phase": "responses",
+                        "mode": mode,
+                        "model": opt.model,
+                        "duration_ms": dt_ms,
+                        "request": {"max_output_tokens": p.get("max_output_tokens")},
+                        "response": {"meta": meta, "text": text},
+                    },
+                )
+
             else:
+                # ---------- Chat Completions (как было) ----------
                 p = {
                     "model": opt.model,
                     "messages": msgs,
@@ -331,13 +592,16 @@ class OpenAIProvider(LLMProvider):
 
                 raw_api = getattr(self._client.chat.completions, "with_raw_response", None)
                 if raw_api and hasattr(raw_api, "create"):
+                    t0 = time.perf_counter()
                     raw = raw_api.create(**p)
                     resp = raw.parse()
                 else:
+                    t0 = time.perf_counter()
                     resp = self._client.chat.completions.create(**p)
 
                 ch = resp.choices[0]
-                text = ch.message.content or ""
+                msg = ch.message
+                text = msg.content or ""
                 finish = getattr(ch, "finish_reason", None)
                 usage = getattr(resp, "usage", None)
                 meta = {
@@ -348,9 +612,38 @@ class OpenAIProvider(LLMProvider):
                     "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
                     "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
                 }
-
-            if not (text or "").strip():
-                raise ValueError(f"Empty content (finish_reason={meta.get('finish_reason')})")
+                dt_ms = int((time.perf_counter() - t0) * 1000)
+                msg_info = {"has_content": bool(getattr(msg, "content", None)), "has_parsed": getattr(msg, "parsed", None) is not None}
+                _log_llm_event(
+                    self.settings,
+                    {
+                        "provider": "openai",
+                        "phase": "chat",
+                        "mode": mode,
+                        "model": opt.model,
+                        "phase": "chat",
+                        "mode": mode,
+                        "model": opt.model,
+                        "duration_ms": dt_ms,
+                        "request": {"max_completion_tokens": p.get("max_completion_tokens")},
+                        "request": {"max_completion_tokens": p.get("max_completion_tokens")},
+                        "response": {"meta": meta, "msg": msg_info},
+                    },
+                )
+                if not text:
+                    parsed = getattr(msg, "parsed", None)
+                    if parsed is not None:
+                        # превращаем обратно в строку JSON
+                        try:
+                            text = json.dumps(parsed, ensure_ascii=False)
+                        except Exception:
+                            text = str(parsed)
+                if not text:
+                    try:
+                        # на случай другой формы объектов в SDK
+                        text = getattr(msg, "to_dict", lambda: {})().get("content") or ""
+                    except Exception:
+                        pass
             if opt.log_response:
                 _print_block(f"[LLM RESPONSE] {meta}", text, opt.truncate)
             return text, meta

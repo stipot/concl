@@ -17,43 +17,43 @@
     }
   },
   "totals": {
-    "valid_items": 3781,
-    "inval_items": 1798,
-    "invalid_rate": 0.32227997849076895
+    "valid_items": 7380,
+    "inval_items": 2653,
+    "invalid_rate": 0.2644273896142729
   },
   "counts_valid": {
     "structure_errors": 0,
     "codes": {
-      "contexts.too_similar": 260
+      "contexts.too_similar": 503
     },
-    "answers_leq_tau_all": 3781,
-    "contexts_total_sum": 10872
+    "answers_leq_tau_all": 7380,
+    "contexts_total_sum": 21250
   },
   "components_valid": {
     "S": 1.0,
     "A": 1.0,
     "U": 1.0,
     "L": 1.0,
-    "O": 0.9312351229833378,
+    "O": 0.9318428184281843,
     "F": 1.0,
     "C": 1.0,
-    "D": 0.9844822604090764
+    "D": 0.9854565551075565
   },
   "parts_valid": {
-    "fcgi_valid": 0.980994834024,
-    "avg_k": 2.875429780481,
+    "fcgi_valid": 0.9812201916,
+    "avg_k": 2.879403794038,
     "S": 1.0,
     "A": 1.0,
     "U": 1.0,
     "L": 1.0,
-    "O": 0.931235122983,
+    "O": 0.931842818428,
     "F": 1.0,
     "C": 1.0,
-    "D": 0.984482260409
+    "D": 0.985456555108
   },
   "fcgi": {
-    "fcgi_valid": 0.980994834024,
-    "fcgi_global": 0.743878588517
+    "fcgi_valid": 0.9812201916,
+    "fcgi_global": 0.786624071174
   },
   "by_subfield": {
     "Mathematics": {
@@ -124,68 +124,167 @@
     },
     "Physical Sciences": {
       "counts": {
-        "total": 848,
-        "structure_errors": 0,
-        "codes": {
-          "contexts.too_similar": 51
-        },
-        "answers_leq_tau_all": 848,
-        "contexts_total_sum": 2453
-      },
-      "components": {
-        "S": 1.0,
-        "A": 1.0,
-        "U": 1.0,
-        "L": 1.0,
-        "O": 0.9398584905660378,
-        "F": 1.0,
-        "C": 1.0,
-        "D": 0.9884842804378782
-      },
-      "parts": {
-        "fcgi_valid": 0.9835608958810801,
-        "avg_k": 2.892688679245283,
-        "S": 1.0,
-        "A": 1.0,
-        "U": 1.0,
-        "L": 1.0,
-        "O": 0.9398584905660378,
-        "F": 1.0,
-        "C": 1.0,
-        "D": 0.9884842804378782
-      }
-    },
-    "Chemical Sciences": {
-      "counts": {
-        "total": 784,
+        "total": 896,
         "structure_errors": 0,
         "codes": {
           "contexts.too_similar": 53
         },
-        "answers_leq_tau_all": 784,
-        "contexts_total_sum": 2131
+        "answers_leq_tau_all": 896,
+        "contexts_total_sum": 2597
       },
       "components": {
         "S": 1.0,
         "A": 1.0,
         "U": 1.0,
         "L": 1.0,
-        "O": 0.9323979591836735,
+        "O": 0.9408482142857143,
         "F": 1.0,
         "C": 1.0,
-        "D": 0.9205392935235319
+        "D": 0.98968505859375
       },
       "parts": {
-        "fcgi_valid": 0.9771100114612359,
-        "avg_k": 2.7181122448979593,
+        "fcgi_valid": 0.9839014785561925,
+        "avg_k": 2.8984375,
         "S": 1.0,
         "A": 1.0,
         "U": 1.0,
         "L": 1.0,
-        "O": 0.9323979591836735,
+        "O": 0.9408482142857143,
         "F": 1.0,
         "C": 1.0,
-        "D": 0.9205392935235319
+        "D": 0.98968505859375
+      }
+    },
+    "Chemical Sciences": {
+      "counts": {
+        "total": 1031,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 99
+        },
+        "answers_leq_tau_all": 1031,
+        "contexts_total_sum": 2854
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.903976721629486,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.946262374630866
+      },
+      "parts": {
+        "fcgi_valid": 0.971124541425915,
+        "avg_k": 2.7681862269641124,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.903976721629486,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.946262374630866
+      }
+    },
+    "Earth and Related Environmental Sciences": {
+      "counts": {
+        "total": 1269,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 93
+        },
+        "answers_leq_tau_all": 1269,
+        "contexts_total_sum": 3618
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9267139479905437,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.977818017202354
+      },
+      "parts": {
+        "fcgi_valid": 0.9793519144587887,
+        "avg_k": 2.851063829787234,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9267139479905437,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.977818017202354
+      }
+    },
+    "Biological Sciences": {
+      "counts": {
+        "total": 991,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 37
+        },
+        "answers_leq_tau_all": 991,
+        "contexts_total_sum": 2850
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9626639757820383,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9845949570351122
+      },
+      "parts": {
+        "fcgi_valid": 0.9893510388314275,
+        "avg_k": 2.875882946518668,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9626639757820383,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9845949570351122
+      }
+    },
+    "Other Natural Sciences": {
+      "counts": {
+        "total": 1044,
+        "structure_errors": 0,
+        "codes": {
+          "contexts.too_similar": 65
+        },
+        "answers_leq_tau_all": 1044,
+        "contexts_total_sum": 3043
+      },
+      "components": {
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9377394636015326,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9927326008132588
+      },
+      "parts": {
+        "fcgi_valid": 0.9832633568814387,
+        "avg_k": 2.914750957854406,
+        "S": 1.0,
+        "A": 1.0,
+        "U": 1.0,
+        "L": 1.0,
+        "O": 0.9377394636015326,
+        "F": 1.0,
+        "C": 1.0,
+        "D": 0.9927326008132588
       }
     }
   }

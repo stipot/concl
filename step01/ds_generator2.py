@@ -455,7 +455,7 @@ def call_llm(
 ) -> Tuple[str, Dict[str, Any]]:
     # Логируем промпт ровно один раз здесь, без дублей на ретраях
     if log_prompt:
-        print_block("[PROMPT → LLM]", prompt, max_len=truncate, color=typer.colors.CYAN)
+        print_block("[PROMPT → LLM]", "prompt", max_len=truncate, color=typer.colors.CYAN)
 
     # Подготавливаем LLMOptions и делегируем провайдеру:
     opt = LLMOptions(

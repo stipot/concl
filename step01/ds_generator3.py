@@ -68,6 +68,57 @@ def load_field_data(path: str) -> List[Dict]:
         return json.load(f)
 
 
+def salvage_items_array(s: str) -> Optional[str]:
+    # ищем '"items"' и первую открывающую '['
+    i = s.find('"items"')
+    if i < 0:
+        return None
+    j = s.find("[", i)
+    if j < 0:
+        return None
+
+    # читаем элементы { ... }, балансируя фигурные скобки
+    k = j + 1
+    depth = 0
+    last_good_end = None
+    in_str = False
+    esc = False
+
+    while k < len(s):
+        ch = s[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    # очередной объект массива полностью закрылся
+                    last_good_end = k
+        k += 1
+
+    if last_good_end is None:
+        return None
+
+    # содержимое МЕЖДУ '[' и последним '}' (без самой '[')
+    inner = s[j + 1 : last_good_end + 1].strip()
+
+    # убираем возможную висящую запятую
+    if inner.endswith(","):
+        inner = inner[:-1].rstrip()
+
+    # собираем корректный JSON-объект
+    return '{ "items": [' + inner + "] }"
+
+
 def tokenize_words(s: str) -> List[str]:
     return [m.group(0) for m in WORD_RE.finditer((s or "").strip())]
 
@@ -225,7 +276,14 @@ def parse_json_items(reply: str) -> List[Dict]:
     try:
         obj = json.loads(s)
     except json.JSONDecodeError:
-        return []
+        salv = salvage_items_array(s)
+        if salv:
+            try:
+                obj = json.loads(salv)
+            except Exception:
+                return []
+        else:
+            return []
 
     # Корневой объект с массивом items (Structured Outputs)
     if isinstance(obj, dict) and "items" in obj and isinstance(obj["items"], list):
@@ -382,6 +440,7 @@ R7. Concision: each answer ≤ 2 tokens (words or numbers); use digits and canon
 R8. Time-neutrality: avoid time/popularity/superlatives unless an explicit year (YYYY) is present in the context.
 R9. Epistemic scope: keep within the stated field/subfield/subject unless a context explicitly frames another formal paradigm.
 R10. Self-containment: each context is a short phrase (≤ 12 words) that changes assumptions. Do not hint at the answer; do not quote it.
+R11. ASCII-only: use only ASCII characters in answers and contexts; replace symbols (∞→inf, ω→omega, ℵ₁→aleph1).
 
 Self-check BEFORE output (do not print this checklist):
 C1. "q" is clear and yields "n" under a default interpretation.
@@ -429,7 +488,7 @@ Prefer 3 contexts when natural; 2 is acceptable if both are clearly distinct par
 """.strip()
 
 
-def plan_batch_size(prompt_tokens: int, max_tokens: int, requested: int, est_per_item: int = 90) -> int:
+def plan_batch_size(prompt_tokens: int, max_tokens: int, requested: int, est_per_item: int = 90, hard_cap: int = 12) -> int:
     """
     Простейший планировщик размера батча.
     - est_per_item: грубая оценка токенов на 1 объект (ответы+контексты)
@@ -439,7 +498,7 @@ def plan_batch_size(prompt_tokens: int, max_tokens: int, requested: int, est_per
     if budget <= 0:
         return 1
     cap = max(1, budget // max(1, est_per_item))
-    return max(1, min(requested, cap))
+    return max(1, min(requested, min(cap, hard_cap)))
 
 
 # --- replace function signature & body of call_openai() ---
@@ -461,9 +520,10 @@ def call_llm(
     except Exception:
         provider_cls_name = ""
     is_gigachat = "gigachatprovider" in provider_cls_name
+    is_gpt5 = is_reasoning_model(model)  # включает всё, что содержит "gpt-5", "o3", "o4"
     if log_prompt:
         src = "GigaChat" if is_gigachat else "LLM"
-        print_block(f"[PROMPT → {src}]", "prompt", max_len=truncate, color=typer.colors.CYAN)
+        print_block(f"[PROMPT → {src}]", prompt, max_len=truncate, color=typer.colors.CYAN)
     # Подготавливаем LLMOptions и делегируем провайдеру:
     opt = LLMOptions(
         model=model,
@@ -473,32 +533,35 @@ def call_llm(
         json_schema=qa_batch_schema(expected_batch) if expected_batch else qa_batch_schema(),
         json_mode=("none" if is_gigachat else "schema"),
         use_responses=True,  # провайдер сам решит (для openai-compat принудит Chat Completions)
-        reasoning_effort=("low" if is_reasoning_model(model) else None),
+        reasoning_effort=("low" if is_gpt5 else None),
         log_prompt=False,
         log_response=log_response,
         truncate=truncate,
     )
     # Первая попытка — schema
     try:
-        # для gigachat сразу один вызов (строгий JSON обеспечен в провайдере)
+        # для gigachat — один прямой вызов
         if is_gigachat:
             return provider.generate_text(prompt, opt)
-
-        # обычный путь: schema → object → none
-        txt, meta = provider.generate_text(prompt, opt)
-        return txt, meta
+        # для gpt-5: пробуем schema, при ошибке ровно один раз object; НЕТ "none"
+        if is_gpt5:
+            return provider.generate_text(prompt, opt)
+        # для остальных: как было
+        return provider.generate_text(prompt, opt)
     except Exception:
         if is_gigachat:
-            # для gigachat делаем один запасной проход с пониженной температурой
             typer.secho("[RETRY:gigachat] temperature→0.2", fg=typer.colors.MAGENTA)
             opt.temperature = 0.2
             return provider.generate_text(prompt, opt)
-
+        if is_gpt5:
+            typer.secho("[RETRY:gpt-5] json_mode→object", fg=typer.colors.MAGENTA)
+            opt.json_mode = "object"
+            return provider.generate_text(prompt, opt)
+        # для не-gpt-5 остаётся «object → none»
         typer.secho("[RETRY] json_mode→object", fg=typer.colors.MAGENTA)
         opt.json_mode = "object"
         try:
-            txt, meta = provider.generate_text(prompt, opt)
-            return txt, meta
+            return provider.generate_text(prompt, opt)
         except Exception:
             typer.secho("[RETRY] json_mode→none", fg=typer.colors.MAGENTA)
             opt.json_mode = "none"
@@ -540,11 +603,22 @@ def generate_for_subject(
     last_err = None
     attempt = 0
     no_progress_batches = 0
+    is_reasoning = is_reasoning_model(model)
     while remaining > 0 and attempt <= max_retries:
         try:
-            # планируем безопасный размер батча
-            # примечание: prompt токены не знаем заранее → берём эвристику
-            batch = plan_batch_size(prompt_tokens=600, max_tokens=max_tokens, requested=remaining, est_per_item=90)
+            if is_reasoning:
+                batch = remaining  # gpt-5 → всё сразу
+            else:
+                est = 90
+                hard = 20
+                batch = plan_batch_size(
+                    prompt_tokens=1200,
+                    max_tokens=max_tokens,
+                    requested=remaining,
+                    est_per_item=est,
+                    hard_cap=hard,
+                )
+
             typer.secho(f"[BATCH] target={remaining}, batch={batch}", fg=typer.colors.MAGENTA)
 
             prompt = build_generation_prompt(field, subfield, subj_name, batch)
@@ -563,7 +637,7 @@ def generate_for_subject(
             # показать извлечённый JSON-блок
             extracted = extract_json_block(raw)
             if log_json:
-                print_block("[EXTRACTED JSON BLOCK]", extracted, max_len=truncate, color=typer.colors.MAGENTA)
+                print_block("[RAW LLM TEXT]", raw, max_len=truncate, color=typer.colors.MAGENTA)
 
             items = parse_json_items(extracted)
             if not items:
@@ -596,6 +670,8 @@ def generate_for_subject(
                 no_progress_batches = 0
 
             attempt = 0  # успешный батч сбрасывает счётчик ошибок
+            if is_reasoning_model(model):
+                time.sleep(0.6)  # короткий троттлинг для mini
             continue
         except Exception as e:
             last_err = e
@@ -603,14 +679,14 @@ def generate_for_subject(
             attempt += 1
             msg = str(e)
             # эвристика: либо finish_reason=length, либо completion_tokens≈max_tokens
-            if ("finish_reason=length" in msg) or ("Empty content" in msg) or ("parsed=0" in msg):
-                if is_reasoning_model(model):
-                    max_tokens = min(4096, int(max_tokens * 1.5))
-                    typer.secho(f"[ADAPT] Raise output budget to {max_tokens}", fg=typer.colors.MAGENTA)
-                else:
-                    if max_tokens > 1024:
-                        max_tokens = max(1024, int(max_tokens * 0.9))
-                        typer.secho(f"[ADAPT] Shrink max_tokens to {max_tokens}", fg=typer.colors.MAGENTA)
+        if "finish_reason=length" in msg:
+            if is_reasoning_model(model):
+                max_tokens = min(max_tokens, 5500)
+                typer.secho(f"[ADAPT] Cap output budget to {max_tokens}", fg=typer.colors.MAGENTA)
+        else:
+            # parsed=0 для reasoning-модели больше не трогаем max_tokens;
+            # с починенным salvage это просто "не смогли ничего вытащить", а не проблема длины.
+            pass
 
             if attempt < max_retries:
                 backoff_sleep(attempt + 1)
@@ -633,7 +709,7 @@ def cmd_gen(
     lang: str = typer.Option("en", help="Код языка для пометки данных в имени файла."),
     num_questions: int = typer.Option(50, min=1, max=50, help="Сколько вопросов на один subject."),
     temperature: float = typer.Option(1.0, min=0.0, max=2.0, help="Температура генерации."),
-    max_tokens: int = typer.Option(7000, min=512, max=8192),
+    max_tokens: int = typer.Option(5000, min=512, max=8192),
     seed: Optional[int] = typer.Option(None, help="Фиксировать seed (если поддерживается)."),
     max_retries: int = typer.Option(3, min=0, max=10),
     resume: bool = typer.Option(True, help="Пропускать уже обработанные (по f/s/j) в выходном файле."),

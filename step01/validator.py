@@ -35,6 +35,8 @@ import statistics
 import sys
 import textwrap
 from typing import Dict, Iterable, List, Optional, Tuple
+from settings_loader import load_settings, get_typed
+from llm_provider import _build_openai_client
 
 try:
     import toml  # pip install toml
@@ -61,6 +63,47 @@ def count_answer_tokens(a: str, hard_limit: int) -> int:
     if _MATH_HINT.search(s):
         return 1
     return len(tokenize_words(s))
+
+
+def get_embedding_api_key() -> Optional[str]:
+    # 1. ENV имеет приоритет
+    env_openai = os.getenv("OPENAI_API_KEY")
+    if env_openai:
+        return env_openai
+    env_giga = os.getenv("GIGACHAT_API_KEY")
+    if env_giga:
+        return env_giga
+
+    # 2. Пытаемся использовать общие настройки (как в llm_provider)
+    try:
+        from settings_loader import load_settings, get_typed  # или просто import settings_loader, если так устроено
+
+        settings = load_settings()
+        api_key = get_typed(settings, "OPENAI_API_KEY", None, str) or get_typed(settings, "GIGACHAT_API_KEY", None, str)
+        if api_key:
+            return api_key
+    except Exception as e:
+        print(f"[WARN] settings_loader not available or failed: {e}", file=sys.stderr)
+
+    # 3. Fallback: читаем .secrets.toml напрямую (как было в validate_dataset.py)
+    try:
+        import toml
+    except Exception:
+        toml = None
+
+    if toml is not None:
+        for candidate in (".secrets.toml", "./step01/.secrets.toml", "../.secrets.toml"):
+            if os.path.exists(candidate):
+                try:
+                    secrets = toml.load(candidate)
+                    api_key = secrets.get("OPENAI_API_KEY") or secrets.get("GIGACHAT_API_KEY")
+                    if api_key:
+                        print(f"[INFO] Embeddings API key loaded from {candidate}", file=sys.stderr)
+                        return api_key
+                except Exception as e:
+                    print(f"[WARN] Failed to read {candidate}: {e}", file=sys.stderr)
+
+    return None
 
 
 def read_api_key_from_secrets(path: str = ".secrets.toml") -> Optional[str]:
@@ -187,6 +230,48 @@ class DummyEmbeddingProvider(EmbeddingProvider):
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         return [[0.0] * 10 for _ in texts]
+
+
+# в validate_dataset.py
+from settings_loader import load_settings, get_typed
+from llm_provider import _build_openai_client
+
+
+class SettingsEmbeddingProvider(EmbeddingProvider):
+    """
+    Эмбеддинги через тот же OpenAI/совместимый endpoint, что и llm_provider.
+    Может работать как с OPENAI_API_KEY, так и с GIGACHAT_API_KEY + llm.compat.base_url.
+    """
+
+    def __init__(self, settings=None):
+        self.settings = settings or load_settings()
+
+        # ключ: сначала OpenAI, потом GigaChat-совместимый
+        api_key = get_typed(self.settings, "OPENAI_API_KEY", None, str) or get_typed(self.settings, "GIGACHAT_API_KEY", None, str)
+        if not api_key:
+            raise RuntimeError("No API key for embeddings (OPENAI_API_KEY or GIGACHAT_API_KEY).")
+
+        # берём тот же compat base_url, если хочешь гонять эмбеддинги через GigaChat-Pro
+        base_url = get_typed(self.settings, "llm.compat.base_url", None, str)
+        timeout = get_typed(self.settings, "llm.compat.timeout", 60.0, float)
+        max_retries = get_typed(self.settings, "llm.compat.max_retries", 3, int)
+        default_headers = get_typed(self.settings, "llm.compat.default_headers", None, dict)
+        default_query = get_typed(self.settings, "llm.compat.default_query", None, dict)
+
+        self._client = _build_openai_client(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            default_query=default_query,
+        )
+        # отдельная настройка модели эмбеддингов
+        self._model = get_typed(self.settings, "llm.embeddings.model", "text-embedding-3-small", str)
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        resp = self._client.embeddings.create(model=self._model, input=texts)
+        return [d.embedding for d in resp.data]
 
 
 # =========================
@@ -486,7 +571,7 @@ def write_summary(path: str, summary: Dict) -> None:
 def build_pipeline(use_embeddings: bool, max_sim: float, max_contexts: int, max_answer_tokens: int) -> ValidatorPipeline:
     embedder: Optional[EmbeddingProvider] = None
     if use_embeddings:
-        api_key = read_api_key_from_secrets()
+        api_key = get_embedding_api_key()
         if api_key:
             try:
                 embedder = OpenAIEmbeddingProvider(api_key=api_key)
@@ -494,7 +579,7 @@ def build_pipeline(use_embeddings: bool, max_sim: float, max_contexts: int, max_
                 print(f"[WARN] Embeddings disabled: {e}", file=sys.stderr)
                 embedder = None
         else:
-            print("[WARN] OPENAI_API_KEY not found; embeddings disabled.", file=sys.stderr)
+            print("[WARN] No API key for embeddings (OPENAI_API_KEY or GIGACHAT_API_KEY); embeddings disabled.", file=sys.stderr)
 
     validators: List[BaseValidator] = [
         StructureValidator(min_contexts=2, max_answer_tokens=max_answer_tokens),
