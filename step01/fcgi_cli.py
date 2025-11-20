@@ -1,4 +1,3 @@
-# fcgi_cli.py
 # Unified "Finite-Context Generation Index" (FCGI) calculator for LLM question-generation quality.
 # Usage examples:
 #   python fcgi_cli.py compute --prefix ./step01/data/gpt-4o_validation \
@@ -10,6 +9,7 @@
 #       --out-json ./step01/data/gpt-4o_fcgi.json
 # python ./step01/fcgi_cli.py --prefix ./step01/data/gpt-4o_generated_questions_en/gpt-4o_validation --out-json ./step01/data/gpt-4o_generated_questions_en/gpt-4o_fcgi.json
 # python ./step01/fcgi_cli.py --prefix ./step01/data/gpt-5-nano-2025-08-07_generated_questions_en/gpt-5-nano-2025-08-07_exp1_validation --out-json ./step01/data/gpt-5-nano-2025-08-07_generated_questions_en/gpt-gpt-5-nano-2025-08-07_exp1_fcgi.json
+# fcgi_cli.py
 from __future__ import annotations
 
 import csv
@@ -29,15 +29,16 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 # --------- Defaults / constants ---------
 TOKEN_RE = re.compile(r"\w+", flags=re.U | re.M)
 
+# СЫРЫЕ веса компонент (используются для нормализации внутри метрики)
 DEFAULT_WEIGHTS = {
-    "S": 2.0,  # structural soundness
+    "S": 1.5,  # structural soundness
     "A": 1.0,  # baseline alignment
-    "U": 1.5,  # uniqueness (no answer collisions)
-    "L": 2.0,  # leakage avoidance
-    "O": 3.0,  # orthogonality
+    "U": 1.0,  # uniqueness (no answer collisions)
+    "L": 1.0,  # leakage avoidance
+    "O": 4.0,  # orthogonality (главный вклад)
     "F": 1.0,  # finite diversity (no vague / too many)
     "C": 0.5,  # concision (answers length ≤ τ)
-    "D": 0.75,  # default-arity proximity (k≈3)
+    "D": 2.0,  # default-arity proximity (k≈3)
 }
 DEFAULT_TAU = 7  # tokens threshold for C
 DEFAULT_ALPHA = 0.75  # strength of global penalty by invalid_rate
@@ -171,7 +172,20 @@ def write_csv(path: str, rows: List[Dict[str, object]], fieldnames: List[str]):
 
 
 # --------- Core computations ---------
-def components_from_counts(cnt: Counts, weights: Dict[str, float], target_k: float) -> Tuple[Components, Dict[str, float]]:
+def components_from_counts(
+    cnt: Counts,
+    weights: Dict[str, float],
+    target_k: float,
+) -> Tuple[Components, Dict[str, float]]:
+    """
+    Считает компоненты S..D и "валидную" часть FCGI без глобального штрафа по invalid_rate.
+    Возвращает:
+      - Components(S..D)
+      - parts: {
+          "fcgi_add", "fcgi_geom", "fcgi_pen", "fcgi_valid",
+          "avg_k", "S", "A", "U", "L", "O", "F", "C", "D"
+        }
+    """
     n = max(cnt.total, 1)
 
     S = 1.0 - (cnt.structure_errors / n)
@@ -183,24 +197,65 @@ def components_from_counts(cnt: Counts, weights: Dict[str, float], target_k: flo
     C = cnt.answers_leq_tau_all / n
 
     avg_k = cnt.contexts_total_sum / n
-    # мягкий штраф вокруг target_k; превратим в [0,1]
+    # мягкий штраф вокруг target_k; приведём в [0,1]
     D = 1.0 - (abs(avg_k - target_k) ** 2)
     D = max(0.0, min(1.0, D))
 
     comps = Components(S=S, A=A, U=U, L=L, O=O, F=F, C=C, D=D)
 
-    # лог-среднее с весами
-    den = sum(weights.values())
-    num = 0.0
-    parts = {}
-    for k in ["S", "A", "U", "L", "O", "F", "C", "D"]:
-        v = getattr(comps, k)
-        vv = max(v, 1e-9)
-        num += weights[k] * math.log(vv)
-        parts[k] = v
+    # --- Абсолютная FCGI из компонент (без invalid_rate) ---
 
-    fcgi_valid = math.exp(num / den)
-    return comps, {"fcgi_valid": fcgi_valid, "avg_k": avg_k, **parts}
+    # нормализуем веса
+    keys = ["S", "A", "U", "L", "O", "F", "C", "D"]
+    w_sum = sum(float(weights.get(k, 0.0)) for k in keys) or 1.0
+    w_norm = {k: float(weights.get(k, 0.0)) / w_sum for k in keys}
+
+    # 1) Аддитивный индекс
+    F_add = 0.0
+    for k in keys:
+        v = getattr(comps, k)
+        v = max(0.0, min(1.0, float(v)))
+        F_add += w_norm[k] * v
+
+    # 2) Геометрический индекс
+    eps = 1e-6
+    log_sum = 0.0
+    for k in keys:
+        v = getattr(comps, k)
+        v = max(eps, min(1.0, float(v)))
+        log_sum += w_norm[k] * math.log(v)
+    F_geom = math.exp(log_sum)
+
+    # 3) Штрафной индекс (L2 по дефектам)
+    P = 0.0
+    for k in keys:
+        v = getattr(comps, k)
+        v = max(0.0, min(1.0, float(v)))
+        p = 1.0 - v
+        P += w_norm[k] * (p**2)
+    F_pen = 1.0 - P
+    F_pen = max(0.0, min(1.0, F_pen))
+
+    # 4) Смесь трёх под-индексов — валидная часть FCGI
+    F_valid = 0.2 * F_add + 0.3 * F_geom + 0.5 * F_pen
+
+    parts: Dict[str, float] = {
+        "fcgi_add": F_add,
+        "fcgi_geom": F_geom,
+        "fcgi_pen": F_pen,
+        "fcgi_valid": F_valid,
+        "avg_k": avg_k,
+        "S": S,
+        "A": A,
+        "U": U,
+        "L": L,
+        "O": O,
+        "F": F,
+        "C": C,
+        "D": D,
+    }
+
+    return comps, parts
 
 
 def aggregate_by_subfield(valid_path: str, tau: int) -> Dict[str, Counts]:
@@ -261,7 +316,7 @@ def cmd_compute(
         typer.secho(f"Файл не найден: {valid_path}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    # weights
+    # weights (сырые, нормализация внутри components_from_counts)
     weights = dict(DEFAULT_WEIGHTS)
     if weights_json:
         try:
@@ -327,7 +382,7 @@ def cmd_compute(
                 "contexts_total_sum": cnt.contexts_total_sum,
             },
             "components": asdict(c_s),
-            "parts": p_s,
+            "parts": {k: (round(v, 12) if isinstance(v, float) else v) for k, v in p_s.items()},
         }
 
     # 5) Формируем JSON-отчёт
@@ -369,7 +424,23 @@ def cmd_compute(
         fieldnames = (
             list(by_s_rows[0].keys())
             if by_s_rows
-            else ["subfield", "items", "fcgi_valid", "S", "A", "U", "L", "O", "F", "C", "D", "avg_k", "structure_errors", *KEY_CODES, "answers_leq_tau_all"]
+            else [
+                "subfield",
+                "items",
+                "fcgi_valid",
+                "S",
+                "A",
+                "U",
+                "L",
+                "O",
+                "F",
+                "C",
+                "D",
+                "avg_k",
+                "structure_errors",
+                *KEY_CODES,
+                "answers_leq_tau_all",
+            ]
         )
         write_csv(out_csv, by_s_rows, fieldnames)
         typer.secho(f"[OK] CSV → {out_csv}", fg=typer.colors.GREEN)

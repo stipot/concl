@@ -65,3 +65,7 @@ min_entropy = 2.0
 required_top_keys = ["items"] 
 tokcache_path = ".genability_tokcache.sqlite" 
 tokenizer_pref = "tiktoken:cl100k_base" # или "regex" / "hf:meta-llama/Llama-3.1-8B"
+
+[debug]
+llm_log_enabled = true 
+llm_log_path = "./logs/llm_debug.jsonl" # куда писать лог
