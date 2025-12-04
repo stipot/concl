@@ -313,8 +313,12 @@
 ## План исполнения
 
 ```bash
-# gpt-5
-python step01/ds_generator2.py gen --exp exp1 --model gpt-5
+# gpt-5.1
+python step01/ds_generator2.py gen --exp exp1 --model gpt-5.1-2025-11-13 --max-subfields 4
+python step01/validator.py --input step01/data/gpt-5.1-2025-11-13_exp1_generated_questions_en.jsonl --out step01/data/gpt-5.1-2025-11-13_exp1_validation_results.jsonl --summary step01/data/gpt-5.1-2025-11-13_exp1_validation_summary.json --use-embeddings
+python step01/validator.py --input step01/data/gpt-5.1-2025-11-13_exp1_generated_questions_en_inval.jsonl --out step01/data/gpt-5.1-2025-11-13_exp1_validation_results_inval.jsonl --summary step01/data/gpt-5.1-2025-11-13_exp1_validation_summary_inval.json --use-embeddings
+# FCGI
+python ./step01/fcgi_cli.py --prefix ./step01/data/gpt-5.1-2025-11-13_exp1_generated_questions_en/gpt-5.1-2025-11-13_exp1_validation --out-json ./step01/data/gpt-5.1-2025-11-13_exp1_generated_questions_en/gpt-5.1-2025-11-13_exp1_fcgi.json
 
 # gpt-4o
 python step01/ds_generator2.py gen --exp exp1 --model gpt-4o
@@ -322,6 +326,14 @@ python step01/validator.py --input step01/data/gpt-4o_exp1_generated_questions_e
 python step01/validator.py --input step01/data/gpt-4o_exp1_generated_questions_en_inval.jsonl --out step01/data/gpt-4o_exp1_validation_results_inval.jsonl --summary step01/data/gpt-4o_exp1_validation_summary_inval.json --use-embeddings
 # FCGI
 python ./step01/fcgi_cli.py --prefix ./step01/data/gpt-4o_generated_questions_en/gpt-4o_exp1_validation --out-json ./step01/data/gpt-4o_generated_questions_en/gpt-4o_exp1_fcgi.json
+
+# gpt-5-mini
+python step01/ds_generator2.py gen --exp exp1 --model gpt-5-mini
+python step01/validator.py --input step01/data/gpt-5-mini_exp1_generated_questions_en.jsonl --out step01/data/gpt-5-mini_exp1_validation_results.jsonl --summary step01/data/gpt-5-mini_exp1_validation_summary.json --use-embedding
+python step01/validator.py --input step01/data/gpt-5-mini_exp1_generated_questions_en_inval.jsonl --out step01/data/gpt-5-mini_exp1_validation_results_inval.jsonl --summary step01/data/gpt-5-mini_exp1_validation_summary_inval.json --use-embedding
+# FCGI
+python ./step01/fcgi_cli.py --prefix ./step01/data/gpt-5-mini_exp1_generated_questions_en/gpt-5-mini_exp1_validation --out-json ./step01/data/gpt-5-mini_exp1_generated_questions_en/gpt-gpt-5-mini_exp1_fcgi.json
+
 
 # gpt-5-nano-2025-08-07
 python step01/ds_generator2.py gen --exp exp1 --model gpt-5-nano-2025-08-07
