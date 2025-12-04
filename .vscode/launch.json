@@ -52,6 +52,15 @@
       ],
       "console": "integratedTerminal",
       "justMyCode": true
+    },
+    {
+      "name": "Этап 3. Генерация Вариант 3.",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "./step01/ds_generator3.py",
+      "args": ["gen", "--exp", "exp1", "--model", "gpt-5"],
+      "console": "integratedTerminal",
+      "justMyCode": true
     }
   ]
 }
